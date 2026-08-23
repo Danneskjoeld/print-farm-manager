@@ -8,7 +8,7 @@ const events = require('../events');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-const NO_API_KEY_TYPES = new Set(['elegoo-centauri', 'klipper']); // types that store no api_key
+const NO_API_KEY_TYPES = new Set(['elegoo-centauri', 'klipper', 'manual']); // types that store no api_key
 
 // Normalize a raw model string to a canonical ID (lowercase, trimmed).
 // Validation against the registered model list is done via DB query at each call site.
@@ -124,7 +124,8 @@ module.exports = (db) => {
     const { name, ip, api_key, serial_number, group_name, type, model } = req.body;
     const printerType = type || 'prusa';
     const requiresApiKey = !NO_API_KEY_TYPES.has(printerType);
-    if (!name || !ip || !model || (requiresApiKey && !api_key)) {
+    const requiresIp = printerType !== 'manual';
+    if (!name || (requiresIp && !ip) || !model || (requiresApiKey && !api_key)) {
       const keyMsg = requiresApiKey ? ', api_key' : '';
       return res.status(400).json({ error: `name, ip${keyMsg}, and model are required` });
     }
@@ -137,8 +138,11 @@ module.exports = (db) => {
       const result = db.prepare(`
         INSERT INTO printers (name, ip, api_key, serial_number, group_name, type, model, loaded_material, loaded_color, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(name, ip, api_key || '', serial_number || '', group_name || null, printerType, normalized,
+      `).run(name, ip || 'manual', api_key || '', serial_number || '', group_name || null, printerType, normalized,
              loaded_material || null, loaded_color || null, Date.now());
+      if (printerType === 'manual') {
+        db.prepare("UPDATE printers SET status='IDLE', is_held=0 WHERE id=?").run(result.lastInsertRowid);
+      }
       res.status(201).json(db.prepare('SELECT * FROM printers WHERE id = ?').get(result.lastInsertRowid));
     } catch (err) {
       if (err.message.includes('UNIQUE')) {
@@ -251,6 +255,11 @@ module.exports = (db) => {
   router.post('/:id/complete-and-decommission', (req, res) => {
     const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
     if (!printer) return res.status(404).json({ error: 'Printer not found' });
+    if (printer.status === 'PRINTING' || printer.status === 'PAUSED') {
+      return res.status(409).json({
+        error: `Printer is still ${printer.status.toLowerCase()}; a running print cannot be confirmed as completed`,
+      });
+    }
 
     const now = Date.now();
     const { confirmed_qty } = req.body || {};

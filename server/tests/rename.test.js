@@ -15,6 +15,7 @@ beforeAll(() => {
       name TEXT NOT NULL,
       description TEXT,
       status TEXT DEFAULT 'draft',
+      sale_price REAL NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );

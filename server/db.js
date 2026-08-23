@@ -107,6 +107,7 @@ try { db.exec('ALTER TABLE gcodes ADD COLUMN required_material TEXT'); } catch (
 try { db.exec('ALTER TABLE gcodes ADD COLUMN required_color TEXT'); } catch (_) {}
 try { db.exec('ALTER TABLE projects ADD COLUMN required_material TEXT'); } catch (_) {}
 try { db.exec('ALTER TABLE projects ADD COLUMN required_color TEXT'); } catch (_) {}
+try { db.exec('ALTER TABLE projects ADD COLUMN sale_price REAL NOT NULL DEFAULT 0'); } catch (_) {}
 try { db.exec('ALTER TABLE printers ADD COLUMN hourly_cost REAL DEFAULT 0'); } catch (_) {}
 try { db.exec('ALTER TABLE printers ADD COLUMN power_watts REAL DEFAULT 0'); } catch (_) {}
 try { db.exec('ALTER TABLE jobs ADD COLUMN material_cost REAL DEFAULT 0'); } catch (_) {}
@@ -177,7 +178,29 @@ db.exec(`
     performed_by TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_maintenance_printer ON maintenance_records(printer_id, performed_at DESC);
+
+  CREATE TABLE IF NOT EXISTS maintenance_model_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    interval_days INTEGER,
+    interval_print_hours REAL,
+    is_active INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_maintenance_model_plans_model
+    ON maintenance_model_plans(model_id, is_active);
+  CREATE TABLE IF NOT EXISTS maintenance_model_states (
+    model_plan_id INTEGER NOT NULL REFERENCES maintenance_model_plans(id) ON DELETE CASCADE,
+    printer_id INTEGER NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
+    last_completed_at INTEGER,
+    last_completed_print_hours REAL DEFAULT 0,
+    PRIMARY KEY (model_plan_id, printer_id)
+  );
 `);
+
+try { db.exec('ALTER TABLE maintenance_records ADD COLUMN model_plan_id INTEGER REFERENCES maintenance_model_plans(id) ON DELETE SET NULL'); } catch (_) {}
 
 // Printer models — source of truth for which models this farm supports.
 // New installs start empty; operator adds models in Settings.
@@ -203,6 +226,10 @@ try {
     'p1p':             { label: 'P1P',             connector: 'bambu' },
     'a1':              { label: 'A1',              connector: 'bambu' },
     'a1-mini':         { label: 'A1 Mini',         connector: 'bambu' },
+    'form-3':          { label: 'Formlabs Form 3', connector: 'manual' },
+    'form-3l':         { label: 'Formlabs Form 3L', connector: 'manual' },
+    'form-4':          { label: 'Formlabs Form 4', connector: 'manual' },
+    'form-4l':         { label: 'Formlabs Form 4L', connector: 'manual' },
   };
   // Collect every distinct model already in use across printers + gcodes
   const inUse = db.prepare(`
@@ -217,6 +244,12 @@ try {
   for (const modelId of inUse) {
     const meta = KNOWN_MODEL_META[modelId];
     insertModel.run(modelId, meta?.label || modelId, meta?.connector || 'prusa');
+  }
+  // Manual Formlabs models are available out of the box because they need no
+  // network discovery and are the primary use case for the manual connector.
+  for (const modelId of ['form-3', 'form-3l', 'form-4', 'form-4l']) {
+    const meta = KNOWN_MODEL_META[modelId];
+    insertModel.run(modelId, meta.label, meta.connector);
   }
 } catch (_) {}
 

@@ -30,13 +30,6 @@ const PROJECT_STATUS = {
   completed: { bg: '#14532d', text: '#86efac', dot: '#86efac', label: 'Completed' },
 };
 
-// Only Active projects show by default; Draft, Paused, and Completed are each behind
-// their own checkbox so a farm with a long project history doesn't bury the in-flight
-// work. Persisted per browser, same pattern as Printers.jsx's "Show decommissioned".
-const SHOW_DRAFT_KEY     = 'projects.showDraft';
-const SHOW_PAUSED_KEY    = 'projects.showPaused';
-const SHOW_COMPLETED_KEY = 'projects.showCompleted';
-
 // Dropdown options per project status.
 // 'action' is either a status string ('active', 'paused') or a special verb ('complete', 'reactivate').
 const STATUS_MENU = {
@@ -151,7 +144,7 @@ const uploadLabelSx = {
   marginBottom: 3,
 };
 
-function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, projectMaterial, projectColor, projectGroups, groups }) {
+function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, projectMaterial, projectColor }) {
   const [file, setFile]             = useState(null);
   const [partsPerPlate, setPPP]     = useState('');
   const [model, setModel]           = useState('');
@@ -162,13 +155,22 @@ function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, pro
   const [modelOptions, setModelOptions] = useState([]);
   const [amsSlots, setAmsSlots]     = useState([]);
   const [amsSlot, setAmsSlot]       = useState('');
-  const [selectedGroups, setSelectedGroups]   = useState([]);  // [] = all groups (or inherits project)
+  const [availableGroups, setAvailableGroups] = useState([]);
+  const [selectedGroups, setSelectedGroups]   = useState([]);  // [] = all groups
   const [requiredMaterial, setRequiredMaterial] = useState('');
   const [requiredColor, setRequiredColor]       = useState('');
 
   useEffect(() => {
     fetch('/api/models').then(r => r.json()).then(setModelOptions).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!model) { setAvailableGroups([]); setSelectedGroups([]); return; }
+    fetch(`/api/printers/groups?model=${encodeURIComponent(model)}`)
+      .then(r => r.json())
+      .then(groups => { setAvailableGroups(groups); setSelectedGroups([]); })
+      .catch(() => {});
+  }, [model]);
 
   useEffect(() => {
     if (!model) { setAmsSlots([]); setAmsSlot(''); return; }
@@ -392,10 +394,10 @@ function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, pro
             </select>
           );
         })()}
-        {groups.length > 0 && (
+        {availableGroups.length > 0 && (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
             <span style={{ fontSize: 11, color: '#475569' }}>Groups:</span>
-            {groups.map(g => (
+            {availableGroups.map(g => (
               <label key={g} style={{ display: 'flex', alignItems: 'center', gap: 3, cursor: 'pointer', fontSize: 12, color: selectedGroups.includes(g) ? '#7dd3fc' : '#64748b' }}>
                 <input
                   type="checkbox"
@@ -406,11 +408,7 @@ function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, pro
                 {g}
               </label>
             ))}
-            {selectedGroups.length === 0 && (
-              <span style={{ fontSize: 11, color: '#334155', fontStyle: 'italic' }}>
-                {projectGroups?.length > 0 ? `(inherits project: ${projectGroups.join(', ')})` : 'all groups'}
-              </span>
-            )}
+            {selectedGroups.length === 0 && <span style={{ fontSize: 11, color: '#334155', fontStyle: 'italic' }}>all groups</span>}
           </div>
         )}
       </div>
@@ -420,12 +418,13 @@ function GcodeUploadPanel({ part, onUploaded, filamentTypes, filamentColors, pro
   );
 }
 
-function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors, projectMaterial, projectColor, projectGroups, groups }) {
+function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors, projectMaterial, projectColor }) {
   const [timeDraft, setTimeDraft]         = useState(formatDurationForInput(gc.est_print_secs));
   const [materialDraft, setMaterialDraft] = useState(formatMaterialForInput(gc.material_grams));
   const [parsing, setParsing]             = useState(false);
   const [saving, setSaving]               = useState(false);
   const [error, setError]                 = useState(null);
+  const [availableGroups, setAvailableGroups] = useState([]);
   const [selectedGroups, setSelectedGroups]   = useState(() => {
     try { return gc.allowed_groups ? JSON.parse(gc.allowed_groups) : []; } catch (_) { return []; }
   });
@@ -439,6 +438,11 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
     setReqColor(gc.required_color || '');
     try { setSelectedGroups(gc.allowed_groups ? JSON.parse(gc.allowed_groups) : []); } catch (_) { setSelectedGroups([]); }
   }, [gc.est_print_secs, gc.material_grams, gc.required_material, gc.required_color, gc.allowed_groups]);
+
+  useEffect(() => {
+    fetch(`/api/printers/groups?model=${encodeURIComponent(gc.printer_model)}`)
+      .then(r => r.json()).then(setAvailableGroups).catch(() => {});
+  }, [gc.printer_model]);
 
   function toggleGroup(g) {
     setSelectedGroups(prev => prev.includes(g) ? prev.filter(x => x !== g) : [...prev, g]);
@@ -592,10 +596,10 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
             </select>
           );
         })()}
-        {groups.length > 0 && (
+        {availableGroups.length > 0 && (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
             <span style={{ fontSize: 11, color: '#475569' }}>Groups:</span>
-            {groups.map(g => (
+            {availableGroups.map(g => (
               <label key={g} style={{ display: 'flex', alignItems: 'center', gap: 3, cursor: 'pointer', fontSize: 12, color: selectedGroups.includes(g) ? '#7dd3fc' : '#64748b' }}>
                 <input
                   type="checkbox"
@@ -606,11 +610,7 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
                 {g}
               </label>
             ))}
-            {selectedGroups.length === 0 && (
-              <span style={{ fontSize: 11, color: '#334155', fontStyle: 'italic' }}>
-                {projectGroups?.length > 0 ? `(inherits project: ${projectGroups.join(', ')})` : 'all groups'}
-              </span>
-            )}
+            {selectedGroups.length === 0 && <span style={{ fontSize: 11, color: '#334155', fontStyle: 'italic' }}>all groups</span>}
           </div>
         )}
       </div>
@@ -620,7 +620,7 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
   );
 }
 
-function PartDetailsPanel({ part, gcodes, onRefresh, onSaved, onConfirm, filamentTypes, filamentColors, projectMaterial, projectColor, projectGroups, groups }) {
+function PartDetailsPanel({ part, gcodes, onRefresh, onSaved, onConfirm, filamentTypes, filamentColors, projectMaterial, projectColor }) {
   const [have, setHave] = useState(String(part.completed_qty));
   const [need, setNeed] = useState(String(part.target_qty));
   const [saving, setSaving] = useState(false);
@@ -811,8 +811,6 @@ function PartDetailsPanel({ part, gcodes, onRefresh, onSaved, onConfirm, filamen
               filamentColors={filamentColors}
               projectMaterial={projectMaterial}
               projectColor={projectColor}
-              projectGroups={projectGroups}
-              groups={groups}
             />
           ))}
         </div>
@@ -828,8 +826,6 @@ function PartDetailsPanel({ part, gcodes, onRefresh, onSaved, onConfirm, filamen
           filamentColors={filamentColors}
           projectMaterial={projectMaterial}
           projectColor={projectColor}
-          projectGroups={projectGroups}
-          groups={groups}
         />
       </div>
 
@@ -879,20 +875,6 @@ export default function Projects() {
   const [projects, setProjects]           = useState([]);
   const [loading, setLoading]             = useState(true);
 
-  // List filters: only Active shows by default (see SHOW_*_KEY above)
-  const [showDraft, setShowDraft] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(SHOW_DRAFT_KEY) || 'false'); }
-    catch (_) { return false; }
-  });
-  const [showPaused, setShowPaused] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(SHOW_PAUSED_KEY) || 'false'); }
-    catch (_) { return false; }
-  });
-  const [showCompleted, setShowCompleted] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(SHOW_COMPLETED_KEY) || 'false'); }
-    catch (_) { return false; }
-  });
-
   // Detail view
   const [selectedId, setSelectedId]       = useState(null);
   const [detailProject, setDetailProject] = useState(null);
@@ -903,6 +885,7 @@ export default function Projects() {
   const [showNewForm, setShowNewForm]     = useState(false);
   const [newName, setNewName]             = useState('');
   const [newDesc, setNewDesc]             = useState('');
+  const [newPrice, setNewPrice]           = useState('');
 
   // Add part form
   const [newPartName, setNewPartName]     = useState('');
@@ -923,24 +906,14 @@ export default function Projects() {
   const [dupName,       setDupName]       = useState('');
   const [duplicating,   setDuplicating]   = useState(false);
 
-  // Filament library and group registry: fetched once here, passed down to
-  // avoid per-gcode-row fetches. The group registry is model-independent (a
-  // group is a persisted entity, not derived from which printers currently
-  // carry it), so unlike the old per-model /api/printers/groups call this
-  // never needs to re-fetch when a gcode's target model changes.
+  // Filament library — fetched once here, passed down to avoid per-gcode-row fetches
   const [filamentTypes,  setFilamentTypes]  = useState([]);
   const [filamentColors, setFilamentColors] = useState([]);
-  const [allGroups,      setAllGroups]      = useState([]);
 
   useEffect(() => {
     fetch('/api/filaments/types').then(r => r.json()).then(setFilamentTypes).catch(() => {});
     fetch('/api/filaments/colors').then(r => r.json()).then(setFilamentColors).catch(() => {});
-    fetch('/api/groups').then(r => r.json()).then(groups => setAllGroups(groups.map(g => g.name))).catch(() => {});
   }, []);
-
-  function toggleShowDraft(v)     { setShowDraft(v);     localStorage.setItem(SHOW_DRAFT_KEY, JSON.stringify(v)); }
-  function toggleShowPaused(v)    { setShowPaused(v);    localStorage.setItem(SHOW_PAUSED_KEY, JSON.stringify(v)); }
-  function toggleShowCompleted(v) { setShowCompleted(v); localStorage.setItem(SHOW_COMPLETED_KEY, JSON.stringify(v)); }
 
   // Drag-and-drop reorder state
   const [projectDragSrc,  setProjectDragSrc]  = useState(null);
@@ -1021,10 +994,10 @@ export default function Projects() {
     const res = await fetch('/api/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newName.trim(), description: newDesc.trim() || undefined }),
+      body: JSON.stringify({ name: newName.trim(), description: newDesc.trim() || undefined, sale_price:Number(newPrice || 0) }),
     });
     if (res.ok) {
-      setNewName(''); setNewDesc(''); setShowNewForm(false);
+      setNewName(''); setNewDesc(''); setNewPrice(''); setShowNewForm(false);
       await fetchProjects();
       showToast('Project created');
     }
@@ -1188,10 +1161,7 @@ export default function Projects() {
     });
     setNewPartName(''); setNewPartQty('');
     setAddingPart(false);
-    // Adding a part can flip the parent project from completed back to active (server-side):
-    // refresh the list too, same as every other status-changing action, so the cached
-    // projects array doesn't keep showing "Completed" until some unrelated refresh happens.
-    await Promise.all([fetchDetail(selectedId), fetchProjects()]);
+    await fetchDetail(selectedId);
     showToast('Part added');
   }
 
@@ -1217,15 +1187,6 @@ export default function Projects() {
     await fetchDetail(detailProject.id);
   }
 
-  async function saveProjectGroups(groups) {
-    await fetch(`/api/projects/${detailProject.id}/groups`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ allowed_groups: groups }),
-    });
-    await fetchDetail(detailProject.id);
-  }
-
   async function saveProjectName() {
     if (renameEscapedRef.current) { renameEscapedRef.current = false; return; }
     const trimmed = projectNameDraft.trim();
@@ -1240,19 +1201,20 @@ export default function Projects() {
     showToast('Saved');
   }
 
+  async function saveProjectPrice(value) {
+    const price = Math.max(0, Number(value) || 0);
+    const res = await fetch(`/api/projects/${detailProject.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sale_price: price }),
+    });
+    if (!res.ok) return showToast('Price could not be saved', 'error');
+    await Promise.all([fetchDetail(detailProject.id), fetchProjects()]);
+    showToast('Project price saved');
+  }
+
 
   // ─── List view ───────────────────────────────────────────────────────────────
   if (selectedId == null) {
-    const draftCount     = projects.filter(p => p.status === 'draft').length;
-    const pausedCount    = projects.filter(p => p.status === 'paused').length;
-    const completedCount = projects.filter(p => p.status === 'completed').length;
-    const visibleProjects = projects.filter(p =>
-      p.status === 'active' ||
-      (p.status === 'draft'     && showDraft) ||
-      (p.status === 'paused'    && showPaused) ||
-      (p.status === 'completed' && showCompleted)
-    );
-
     return (
       <div>
         {toastEl}
@@ -1336,29 +1298,6 @@ export default function Projects() {
           </button>
         </div>
 
-        {(draftCount > 0 || pausedCount > 0 || completedCount > 0) && (
-          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 16 }}>
-            {draftCount > 0 && (
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#94a3b8', cursor: 'pointer' }}>
-                <input type="checkbox" checked={showDraft} onChange={e => toggleShowDraft(e.target.checked)} style={{ accentColor: '#3b82f6' }} />
-                Show drafts ({draftCount})
-              </label>
-            )}
-            {pausedCount > 0 && (
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#94a3b8', cursor: 'pointer' }}>
-                <input type="checkbox" checked={showPaused} onChange={e => toggleShowPaused(e.target.checked)} style={{ accentColor: '#3b82f6' }} />
-                Show paused ({pausedCount})
-              </label>
-            )}
-            {completedCount > 0 && (
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#94a3b8', cursor: 'pointer' }}>
-                <input type="checkbox" checked={showCompleted} onChange={e => toggleShowCompleted(e.target.checked)} style={{ accentColor: '#3b82f6' }} />
-                Show completed ({completedCount})
-              </label>
-            )}
-          </div>
-        )}
-
         {showNewForm && (
           <div style={{ background: '#1e2433', border: '1px solid #2d3748', borderRadius: 8, padding: 16, marginBottom: 16, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -1372,6 +1311,12 @@ export default function Projects() {
                 style={{ ...inputSx, width: 220 }}
                 autoFocus
               />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label style={{ color: '#94a3b8', fontSize: 12 }}>Project price (€)</label>
+              <input type="number" min="0" step="0.01" value={newPrice}
+                onChange={e => setNewPrice(e.target.value)} placeholder="0.00"
+                style={{ ...inputSx, width: 130 }} />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <label style={{ color: '#94a3b8', fontSize: 12 }}>Description</label>
@@ -1390,7 +1335,7 @@ export default function Projects() {
               Create
             </button>
             <button
-              onClick={() => { setShowNewForm(false); setNewName(''); setNewDesc(''); }}
+              onClick={() => { setShowNewForm(false); setNewName(''); setNewDesc(''); setNewPrice(''); }}
               style={{ background: '#1f2937', color: '#9ca3af', border: 'none', borderRadius: 4, padding: '6px 14px', fontSize: 13, cursor: 'pointer' }}
             >
               Cancel
@@ -1414,15 +1359,9 @@ export default function Projects() {
             }
           />
         )}
-        {!loading && projects.length > 0 && visibleProjects.length === 0 && (
-          <EmptyState
-            title="No active projects"
-            hint="Every project here is Draft, Paused, or Completed. Check a box above to show them."
-          />
-        )}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {visibleProjects.map(p => {
+          {projects.map(p => {
             const s = PROJECT_STATUS[p.status] || PROJECT_STATUS.draft;
             const isDragging = projectDragSrc === p.id;
             const isOver     = projectDragOver === p.id && !isDragging;
@@ -1459,6 +1398,9 @@ export default function Projects() {
                   {p.description && (
                     <div style={{ color: '#64748b', fontSize: 12 }}>{p.description}</div>
                   )}
+                  <div style={{ color:'#22c55e', fontSize:12, marginTop:3 }}>
+                    Project price: {Number(p.sale_price || 0).toLocaleString(undefined,{style:'currency',currency:'EUR'})}
+                  </div>
                 </div>
 
                 {/* Duplicate button — stop propagation so it doesn't navigate into the project */}
@@ -1493,9 +1435,6 @@ export default function Projects() {
 
   // ─── Detail view ─────────────────────────────────────────────────────────────
   if (!detailProject) return <p style={{ color: '#64748b' }}>Loading…</p>;
-
-  let projectGroups = [];
-  try { projectGroups = detailProject.allowed_groups ? JSON.parse(detailProject.allowed_groups) : []; } catch (_) {}
 
   return (
     <div>
@@ -1533,6 +1472,14 @@ export default function Projects() {
           </>
         )}
         <StatusDropdown project={detailProject} onTransition={handleStatusTransition} />
+        <label style={{display:'flex',alignItems:'center',gap:6,color:'#64748b',fontSize:12,marginLeft:'auto'}}>
+          Project price
+          <input type="number" min="0" step="0.01" defaultValue={Number(detailProject.sale_price || 0)}
+            key={detailProject.sale_price}
+            onBlur={e => saveProjectPrice(e.target.value)}
+            style={{...inputSx,width:110}} />
+          €
+        </label>
       </div>
 
       {/* Project-level filament defaults */}
@@ -1562,35 +1509,6 @@ export default function Projects() {
               .map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
           </select>
           {(detailProject.required_material || detailProject.required_color) && (
-            <span style={{ fontSize: 11, color: '#475569', fontStyle: 'italic' }}>
-              applies to all gcodes in this project unless overridden per-gcode
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Project-level group defaults */}
-      {allGroups.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 12, color: '#64748b', flexShrink: 0 }}>Groups:</span>
-          {allGroups.map(g => (
-            <label key={g} style={{ display: 'flex', alignItems: 'center', gap: 3, cursor: 'pointer', fontSize: 12, color: projectGroups.includes(g) ? '#7dd3fc' : '#64748b' }}>
-              <input
-                type="checkbox"
-                checked={projectGroups.includes(g)}
-                onChange={() => {
-                  const next = projectGroups.includes(g)
-                    ? projectGroups.filter(x => x !== g)
-                    : [...projectGroups, g];
-                  saveProjectGroups(next);
-                }}
-                style={{ accentColor: '#3b82f6' }}
-              />
-              {g}
-            </label>
-          ))}
-          {projectGroups.length === 0 && <span style={{ fontSize: 11, color: '#334155', fontStyle: 'italic' }}>all groups</span>}
-          {projectGroups.length > 0 && (
             <span style={{ fontSize: 11, color: '#475569', fontStyle: 'italic' }}>
               applies to all gcodes in this project unless overridden per-gcode
             </span>
@@ -1736,21 +1654,13 @@ export default function Projects() {
               <PartDetailsPanel
                 part={part}
                 gcodes={partGs}
-                // saveQtys() below can reopen a closed part and, server-side, reactivate a
-                // completed project (raising target_qty above completed_qty), same as
-                // addPart(). Refresh the list too so it doesn't keep showing "Completed"
-                // until some unrelated refresh happens. saveName()/deleteGcode() share this
-                // same onRefresh and never change project status, so the extra fetchProjects()
-                // call there is just a harmless no-op refresh.
-                onRefresh={() => { fetchDetail(selectedId); fetchProjects(); }}
+                onRefresh={() => fetchDetail(selectedId)}
                 onSaved={showToast}
                 onConfirm={confirm}
                 filamentTypes={filamentTypes}
                 filamentColors={filamentColors}
                 projectMaterial={detailProject.required_material || ''}
                 projectColor={detailProject.required_color || ''}
-                projectGroups={projectGroups}
-                groups={allGroups}
               />
             )}
           </div>

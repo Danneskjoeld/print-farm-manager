@@ -31,6 +31,7 @@ const EVENT_META = {
   job_failed:    { label: 'Job Failed',      bg: '#78350f', color: '#fcd34d' },
   note:          { label: 'Note',            bg: '#1e2433', color: '#94a3b8' },
   info_changed:  { label: 'Info Updated',   bg: '#1e2a3a', color: '#7dd3fc' },
+  maintenance:   { label: 'Maintenance',    bg: '#3b2f16', color: '#fde68a' },
 };
 
 function EventBadge({ type }) {
@@ -90,29 +91,46 @@ export default function PrinterDetail() {
   const [models, setModels]           = useState([]);
   const [filamentTypes, setFilamentTypes]   = useState([]);
   const [filamentColors, setFilamentColors] = useState([]);
-  const [groups, setGroups]                 = useState([]);
   const [editingDetails, setEditingDetails] = useState(false);
   const [detailsDraft, setDetailsDraft]     = useState({});
   const [detailsError, setDetailsError]     = useState(null);
   const [savingDetails, setSavingDetails]   = useState(false);
+  const [manualData, setManualData] = useState({ parts: [], active_job: null });
+  const [manualForm, setManualForm] = useState({ part_id: '', parts_per_plate: 1, estimated_duration_minutes: 60, actual_duration_minutes: '', material_cost: 0, confirmed_qty: 1, note: '' });
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualError, setManualError] = useState(null);
 
   const fetchData = useCallback(async () => {
-    const [printerRes, eventsRes, statsRes, modelsRes, typesRes, colorsRes, groupsRes] = await Promise.all([
+    const [printerRes, eventsRes, statsRes, modelsRes, typesRes, colorsRes] = await Promise.all([
       fetch(`/api/printers/${id}`),
       fetch(`/api/printers/${id}/events`),
       fetch(`/api/printers/${id}/jobs/stats`),
       fetch('/api/models'),
       fetch('/api/filaments/types'),
       fetch('/api/filaments/colors'),
-      fetch('/api/groups'),
     ]);
-    if (printerRes.ok)  setPrinter(await printerRes.json());
+    if (printerRes.ok) {
+      const printerData = await printerRes.json();
+      setPrinter(printerData);
+      if (printerData.type === 'manual') {
+        const manualRes = await fetch(`/api/printers/${id}/jobs/manual-options`);
+        if (manualRes.ok) {
+          const data = await manualRes.json();
+          setManualData(data);
+          setManualForm(f => ({
+            ...f,
+            part_id: f.part_id || String(data.parts[0]?.id || ''),
+            confirmed_qty: data.active_job?.parts_per_plate || f.confirmed_qty,
+            material_cost: data.active_job?.material_cost ?? f.material_cost,
+          }));
+        }
+      }
+    }
     if (eventsRes.ok)   setEvents(await eventsRes.json());
     if (statsRes.ok)    setStats(await statsRes.json());
     if (modelsRes.ok)   setModels(await modelsRes.json());
     if (typesRes.ok)    setFilamentTypes(await typesRes.json());
     if (colorsRes.ok)   setFilamentColors(await colorsRes.json());
-    if (groupsRes.ok)   setGroups((await groupsRes.json()).map(g => g.name));
     setLoading(false);
   }, [id]);
 
@@ -180,7 +198,25 @@ export default function PrinterDetail() {
     }
   }
 
-  const NO_API_KEY_TYPES = new Set(['elegoo-centauri', 'klipper']);
+  const NO_API_KEY_TYPES = new Set(['elegoo-centauri', 'klipper', 'manual']);
+
+  async function manualAction(path, body) {
+    setManualBusy(true);
+    setManualError(null);
+    try {
+      const res = await fetch(`/api/printers/${id}/jobs/${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Action failed (${res.status})`);
+      await Promise.all([fetchData(), fetchJobPage(1)]);
+      setJobPage(1);
+    } catch (err) {
+      setManualError(err.message);
+    } finally {
+      setManualBusy(false);
+    }
+  }
 
   function startEditDetails() {
     setDetailsDraft({
@@ -204,7 +240,7 @@ export default function PrinterDetail() {
   async function submitEditDetails(e) {
     e.preventDefault();
     const ip = detailsDraft.ip.trim();
-    if (!ip) { setDetailsError('IP address is required'); return; }
+    if (printer.type !== 'manual' && !ip) { setDetailsError('IP address is required'); return; }
     setSavingDetails(true);
     setDetailsError(null);
     try {
@@ -370,12 +406,8 @@ export default function PrinterDetail() {
                   onChange={e => setDetailsDraft(d => ({ ...d, group_name: e.target.value }))}
                   disabled={savingDetails}
                   placeholder="optional"
-                  list="printer-detail-group-options"
                   style={detailInputStyle}
                 />
-                <datalist id="printer-detail-group-options">
-                  {groups.map(g => <option key={g} value={g} />)}
-                </datalist>
               </label>
               <label style={detailLabelStyle}>
                 Serial Number
@@ -497,6 +529,62 @@ export default function PrinterDetail() {
           </div>
         )}
       </div>
+
+      {printer.type === 'manual' && (
+        <div style={{ background: '#131720', border: '1px solid #334155', borderRadius: 8, padding: '16px 20px', marginBottom: 24 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0', marginBottom: 6 }}>Manual print control</div>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 14 }}>
+            This printer has no server connection. Start and finish its jobs here.
+          </div>
+          {manualData.active_job ? (
+            <div>
+              <div style={{ color: '#86efac', fontWeight: 600, marginBottom: 12 }}>
+                Printing: {manualData.active_job.project_name} · {manualData.active_job.part_name}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(120px, 1fr))', gap: 10 }}>
+                <label style={detailLabelStyle}>Actual duration (min)
+                  <input type="number" min="0.1" step="0.1" value={manualForm.actual_duration_minutes} onChange={e => setManualForm(f => ({ ...f, actual_duration_minutes: e.target.value }))} placeholder="Use elapsed time" style={detailInputStyle} />
+                </label>
+                <label style={detailLabelStyle}>Material cost (€)
+                  <input type="number" min="0" step="0.01" value={manualForm.material_cost} onChange={e => setManualForm(f => ({ ...f, material_cost: e.target.value }))} style={detailInputStyle} />
+                </label>
+                <label style={detailLabelStyle}>Good parts
+                  <input type="number" min="0" max={manualData.active_job.parts_per_plate} value={manualForm.confirmed_qty} onChange={e => setManualForm(f => ({ ...f, confirmed_qty: e.target.value }))} style={detailInputStyle} />
+                </label>
+              </div>
+              <label style={{ ...detailLabelStyle, marginTop: 10 }}>Failure note
+                <input value={manualForm.note} onChange={e => setManualForm(f => ({ ...f, note: e.target.value }))} style={detailInputStyle} />
+              </label>
+              <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                <button disabled={manualBusy} onClick={() => manualAction('manual-complete', { confirmed_qty: Number(manualForm.confirmed_qty), actual_duration_minutes: manualForm.actual_duration_minutes === '' ? null : Number(manualForm.actual_duration_minutes), material_cost: Number(manualForm.material_cost) })} style={{ background: '#166534', color: '#fff', border: 0, borderRadius: 5, padding: '8px 14px', cursor: 'pointer' }}>Complete successfully</button>
+                <button disabled={manualBusy} onClick={() => manualAction('manual-fail', { actual_duration_minutes: manualForm.actual_duration_minutes === '' ? null : Number(manualForm.actual_duration_minutes), material_cost: Number(manualForm.material_cost), note: manualForm.note })} style={{ background: '#991b1b', color: '#fff', border: 0, borderRadius: 5, padding: '8px 14px', cursor: 'pointer' }}>Mark failed</button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr repeat(3, minmax(110px, 1fr))', gap: 10 }}>
+                <label style={detailLabelStyle}>Project / part
+                  <select value={manualForm.part_id} onChange={e => setManualForm(f => ({ ...f, part_id: e.target.value }))} style={detailInputStyle}>
+                    {manualData.parts.length === 0 && <option value="">No open parts</option>}
+                    {manualData.parts.map(p => <option key={p.id} value={p.id}>{p.project_name} · {p.name} ({p.target_qty - p.completed_qty} remaining)</option>)}
+                  </select>
+                </label>
+                <label style={detailLabelStyle}>Parts
+                  <input type="number" min="1" value={manualForm.parts_per_plate} onChange={e => setManualForm(f => ({ ...f, parts_per_plate: e.target.value }))} style={detailInputStyle} />
+                </label>
+                <label style={detailLabelStyle}>Planned minutes
+                  <input type="number" min="1" step="1" value={manualForm.estimated_duration_minutes} onChange={e => setManualForm(f => ({ ...f, estimated_duration_minutes: e.target.value }))} style={detailInputStyle} />
+                </label>
+                <label style={detailLabelStyle}>Material cost (€)
+                  <input type="number" min="0" step="0.01" value={manualForm.material_cost} onChange={e => setManualForm(f => ({ ...f, material_cost: e.target.value }))} style={detailInputStyle} />
+                </label>
+              </div>
+              <button disabled={manualBusy || !manualForm.part_id} onClick={() => manualAction('manual-start', { part_id: Number(manualForm.part_id), parts_per_plate: Number(manualForm.parts_per_plate), estimated_duration_minutes: Number(manualForm.estimated_duration_minutes), material_cost: Number(manualForm.material_cost) })} style={{ marginTop: 12, background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 5, padding: '8px 16px', cursor: 'pointer' }}>Start manual print</button>
+            </div>
+          )}
+          {manualError && <div style={{ color: '#fca5a5', fontSize: 12, marginTop: 10 }}>{manualError}</div>}
+        </div>
+      )}
 
       {/* Stats card */}
       {stats && (

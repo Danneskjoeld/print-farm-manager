@@ -29,9 +29,8 @@ module.exports = (db) => {
     // Derive fleet stats from the live printer list
     const printing = printers.filter(p => p.status === 'PRINTING').length;
     const idle     = printers.filter(p => p.status === 'IDLE' && !p.is_held).length;
-    // Keep this condition identical to Fleet.jsx, Dashboard.jsx, Printers.jsx (see CLAUDE.md sync pairs).
     const awaiting = printers.filter(
-      p => p.is_held === 1 && (p.status === 'FINISHED' || p.status === 'IDLE' || p.status === 'STOPPED')
+      p => p.is_held === 1 && (p.status === 'FINISHED' || p.status === 'IDLE')
     ).length;
 
     // Parts completed in the last 24 hours (sum of parts_per_plate on finished jobs)
@@ -42,10 +41,8 @@ module.exports = (db) => {
     `).get(since).total;
 
     // ── Active projects with their parts ──────────────────────────────────────
-    // Same order as GET /api/projects and the scheduler's dispatch query (see CLAUDE.md
-    // sync pairs) so the dashboard's project order matches what actually dispatches next.
     const activeProjects = db.prepare(`
-      SELECT * FROM projects WHERE status = 'active' ORDER BY priority ASC, created_at ASC
+      SELECT * FROM projects WHERE status = 'active' ORDER BY created_at ASC
     `).all();
 
     const elapsedFinishedStmt = db.prepare(`
@@ -118,6 +115,28 @@ module.exports = (db) => {
       LIMIT 12
     `).all();
 
+    const financialProjects = db.prepare(`
+      SELECT pr.id, pr.name, pr.status, COALESCE(pr.sale_price,0) sale_price,
+        CASE WHEN pr.status='completed' THEN COALESCE(pr.sale_price,0) ELSE 0 END revenue,
+        COALESCE(SUM(CASE WHEN j.status IN ('finished','done','failed')
+          THEN COALESCE(j.material_cost,0)+COALESCE(j.machine_cost,0)+
+               COALESCE(j.energy_cost,0)+COALESCE(j.maintenance_cost,0)
+          ELSE 0 END),0) production_cost
+      FROM projects pr
+      LEFT JOIN parts pa ON pa.project_id=pr.id
+      LEFT JOIN jobs j ON j.part_id=pa.id
+      GROUP BY pr.id
+      ORDER BY CASE WHEN pr.status='completed' THEN 0 ELSE 1 END, pr.updated_at DESC
+    `).all().map(project => ({
+      ...project,
+      profit: project.revenue - project.production_cost,
+    }));
+    const revenue = financialProjects.reduce((sum, project) => sum + project.revenue, 0);
+    const productionCost = financialProjects.reduce((sum, project) => sum + project.production_cost, 0);
+    const generalMaintenance = Number(db.prepare(
+      'SELECT COALESCE(SUM(cost),0) total FROM maintenance_records'
+    ).get().total);
+
     res.json({
       stats: {
         printing,
@@ -128,6 +147,14 @@ module.exports = (db) => {
       printers,
       active_projects: projectsWithParts,
       recent_activity: recentActivity,
+      financials: {
+        revenue,
+        production_cost: productionCost,
+        maintenance_cost: generalMaintenance,
+        total_cost: productionCost + generalMaintenance,
+        profit: revenue - productionCost - generalMaintenance,
+        projects: financialProjects,
+      },
     });
   });
 

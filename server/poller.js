@@ -30,10 +30,13 @@ class PrinterPoller extends EventEmitter {
     }
 
     const printers = this.db
-      .prepare('SELECT * FROM printers WHERE is_active = 1')
+      .prepare("SELECT * FROM printers WHERE is_active = 1 AND type != 'manual'")
       .all();
 
-    if (printers.length === 0) return;
+    if (printers.length === 0) {
+      this.emit('pollComplete');
+      return;
+    }
 
     const results = await Promise.allSettled(
       printers.map((printer) => this._pollPrinter(printer))

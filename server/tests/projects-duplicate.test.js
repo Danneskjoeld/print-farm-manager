@@ -30,6 +30,7 @@ beforeAll(() => {
       description TEXT,
       status      TEXT DEFAULT 'draft',
       priority    INTEGER DEFAULT 0,
+      sale_price  REAL NOT NULL DEFAULT 0,
       created_at  INTEGER NOT NULL,
       updated_at  INTEGER NOT NULL
     );

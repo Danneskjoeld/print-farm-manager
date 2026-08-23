@@ -35,9 +35,8 @@ const LEGEND_ITEMS = [
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function cellColors(printer) {
-  // Held printer (awaiting operator sign-off) renders as green regardless of status.
-  // Keep this condition identical to Fleet.jsx and Printers.jsx (see CLAUDE.md sync pairs).
-  if (printer.is_held === 1 && (printer.status === 'FINISHED' || printer.status === 'IDLE' || printer.status === 'STOPPED')) {
+  // Held printer (awaiting operator sign-off) renders as green regardless of status
+  if (printer.is_held === 1 && (printer.status === 'FINISHED' || printer.status === 'IDLE')) {
     return CELL_COLORS.FINISHED;
   }
   return CELL_COLORS[printer.status] || CELL_COLORS.IDLE;
@@ -77,6 +76,10 @@ function formatMaterial(grams) {
   return `${kg}kg`;
 }
 
+function formatMoney(value) {
+  return new Intl.NumberFormat(undefined, { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(Number(value) || 0);
+}
+
 // ── Row-level status summary badges for the fleet grid ───────────────────────
 
 const ROW_STATUSES = ['PRINTING', 'FINISHED', 'IDLE', 'ERROR', 'STOPPED', 'OFFLINE'];
@@ -86,7 +89,7 @@ function RowSummary({ group }) {
     <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
       {ROW_STATUSES.map(s => {
         const count = group.filter(p => {
-          const isAwaiting = p.is_held === 1 && (p.status === 'FINISHED' || p.status === 'IDLE' || p.status === 'STOPPED');
+          const isAwaiting = p.is_held === 1 && (p.status === 'FINISHED' || p.status === 'IDLE');
           if (s === 'FINISHED') return isAwaiting;
           return p.status === s && !isAwaiting;
         }).length;
@@ -159,7 +162,7 @@ export default function Dashboard() {
     );
   }
 
-  const { stats, printers, active_projects, recent_activity } = data;
+  const { stats, printers, active_projects, recent_activity, financials } = data;
 
   // Group printers by model for the fleet grid
   const modelOrder = allModels.map(m => m.model_id);
@@ -272,6 +275,29 @@ export default function Dashboard() {
               </div>
             </div>
           ))}
+        </div>
+
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12}}>
+          {[
+            ['Farm Revenue',financials?.revenue,'#22c55e'],
+            ['Farm Costs',financials?.total_cost,'#f59e0b'],
+            ['Farm Profit',financials?.profit,(financials?.profit||0)>=0?'#22c55e':'#ef4444'],
+            ['Completed Projects',financials?.projects?.filter(p=>p.status==='completed').length,'#60a5fa',false],
+          ].map(([label,value,color,money=true])=><div key={label} style={{background:'#111827',border:'1px solid #1e293b',borderRadius:8,padding:'12px 16px'}}>
+            <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:'0.1em'}}>{label}</div>
+            <div style={{fontSize:26,fontWeight:800,color,marginTop:4}}>{money?formatMoney(value):Number(value||0).toLocaleString()}</div>
+          </div>)}
+        </div>
+
+        <div style={{background:'#111827',borderRadius:10,padding:'16px 20px',overflowX:'auto'}}>
+          <div style={{fontSize:11,color:'#64748b',textTransform:'uppercase',letterSpacing:'0.15em',fontWeight:700,marginBottom:10}}>Project Profitability</div>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}><thead><tr>
+            {['Project','Status','Price','Revenue','Cost','Profit'].map(h=><th key={h} style={{textAlign:'left',padding:'6px 8px',color:'#475569'}}>{h}</th>)}
+          </tr></thead><tbody>{(financials?.projects||[]).map(p=><tr key={p.id} style={{borderTop:'1px solid #1e293b'}}>
+            <td style={{padding:'7px 8px',fontWeight:600}}>{p.name}</td><td>{p.status}</td><td>{formatMoney(p.sale_price)}</td>
+            <td>{formatMoney(p.revenue)}</td><td>{formatMoney(p.production_cost)}</td>
+            <td style={{color:p.profit>=0?'#22c55e':'#ef4444',fontWeight:700}}>{formatMoney(p.profit)}</td>
+          </tr>)}</tbody></table>
         </div>
 
         {/* ── FLEET GRID ──────────────────────────────────────────────────── */}
@@ -484,5 +510,4 @@ export default function Dashboard() {
     </div>
   );
 }
-
 

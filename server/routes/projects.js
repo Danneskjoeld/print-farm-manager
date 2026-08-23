@@ -20,13 +20,13 @@ module.exports = (db, scheduler = null) => {
   });
 
   router.post('/', (req, res) => {
-    const { name, description } = req.body;
+    const { name, description, sale_price } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });
     const now = Date.now();
     const result = db.prepare(`
-      INSERT INTO projects (name, description, created_at, updated_at)
-      VALUES (?, ?, ?, ?)
-    `).run(name, description || null, now, now);
+      INSERT INTO projects (name, description, sale_price, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(name, description || null, Math.max(0, Number(sale_price) || 0), now, now);
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(result.lastInsertRowid);
     res.status(201).json(project);
   });
@@ -59,36 +59,23 @@ module.exports = (db, scheduler = null) => {
     res.json(db.prepare('SELECT * FROM projects WHERE id = ?').get(project.id));
   });
 
-  // Set project-level group defaults: cascades to every gcode in this project
-  // that doesn't set its own allowed_groups override (see scheduler.js's
-  // COALESCE(gcodes.allowed_groups, projects.allowed_groups)). Empty selection
-  // stores NULL, never '[]': COALESCE(...) = '[]' would be non-NULL and match
-  // zero printers, silently freezing dispatch for the whole project.
-  router.put('/:id/groups', (req, res) => {
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
-    if (!project) return res.status(404).json({ error: 'Project not found' });
-    const arr = Array.isArray(req.body?.allowed_groups)
-      ? req.body.allowed_groups.map(s => String(s).trim()).filter(Boolean)
-      : [];
-    const value = arr.length > 0 ? JSON.stringify(arr) : null;
-    db.prepare(`
-      UPDATE projects SET allowed_groups = ?, updated_at = ? WHERE id = ?
-    `).run(value, Date.now(), project.id);
-    res.json(db.prepare('SELECT * FROM projects WHERE id = ?').get(project.id));
-  });
-
   router.put('/:id', (req, res) => {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    const { name, description, status } = req.body;
+    const { name, description, status, sale_price } = req.body;
+    const price = sale_price === undefined ? null : Number(sale_price);
+    if (sale_price !== undefined && (!Number.isFinite(price) || price < 0)) {
+      return res.status(400).json({ error: 'sale_price must be a non-negative number' });
+    }
     db.prepare(`
       UPDATE projects
       SET name = COALESCE(?, name),
           description = COALESCE(?, description),
           status = COALESCE(?, status),
+          sale_price = COALESCE(?, sale_price),
           updated_at = ?
       WHERE id = ?
-    `).run(name, description, status, Date.now(), req.params.id);
+    `).run(name, description, status, price, Date.now(), req.params.id);
     res.json(db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id));
   });
 
@@ -165,24 +152,13 @@ module.exports = (db, scheduler = null) => {
       WHERE project_id = ? AND status = 'closed' AND completed_qty < target_qty
     `).all(project.id);
 
-    // Parts that are already open with remaining qty don't need a status flip, but they
-    // do mean there's real work left: e.g. a part added (or reopened by an edit) after
-    // the project completed. Without this, reactivate would wrongly report
-    // nothing_to_reopen and leave the project (and that part's jobs) stuck uncompleted.
-    const openRemaining = db.prepare(`
-      SELECT COUNT(*) AS count FROM parts
-      WHERE project_id = ? AND status = 'open' AND completed_qty < target_qty
-    `).get(project.id).count;
-
-    if (eligible.length === 0 && openRemaining === 0) {
+    if (eligible.length === 0) {
       return res.json({ nothing_to_reopen: true, project });
     }
 
-    if (eligible.length > 0) {
-      const placeholders = eligible.map(() => '?').join(',');
-      db.prepare(`UPDATE parts SET status = 'open', updated_at = ? WHERE id IN (${placeholders})`)
-        .run(now, ...eligible.map(p => p.id));
-    }
+    const placeholders = eligible.map(() => '?').join(',');
+    db.prepare(`UPDATE parts SET status = 'open', updated_at = ? WHERE id IN (${placeholders})`)
+      .run(now, ...eligible.map(p => p.id));
 
     db.prepare("UPDATE projects SET status = 'active', updated_at = ? WHERE id = ?").run(now, project.id);
     console.log(`[server] Project ${project.id} "${project.name}" re-activated — ${eligible.length} part(s) reopened`);
@@ -217,9 +193,9 @@ module.exports = (db, scheduler = null) => {
 
     db.transaction(() => {
       const projResult = db.prepare(`
-        INSERT INTO projects (name, description, status, priority, created_at, updated_at)
-        VALUES (?, ?, 'draft', 0, ?, ?)
-      `).run(name, source.description ?? null, now, now);
+        INSERT INTO projects (name, description, status, priority, sale_price, created_at, updated_at)
+        VALUES (?, ?, 'draft', 0, ?, ?, ?)
+      `).run(name, source.description ?? null, Number(source.sale_price || 0), now, now);
       newProject = db.prepare('SELECT * FROM projects WHERE id = ?').get(projResult.lastInsertRowid);
 
       for (const part of sourceParts) {

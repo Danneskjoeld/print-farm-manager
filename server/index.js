@@ -104,6 +104,7 @@ const server = app.listen(PORT, () => {
 
   const poller    = new PrinterPoller(db);
   const scheduler = new JobScheduler(db, poller);
+  let startupReconciled = false;
 
   // Mount projects router here so it has access to the scheduler for complete/reactivate
   app.use('/api/projects', require('./routes/projects')(db, scheduler));
@@ -116,7 +117,9 @@ const server = app.listen(PORT, () => {
   // live printer state rather than whatever was last persisted before shutdown.
   // This prevents dispatching to a printer that started printing while the server was down.
   poller.once('pollComplete', () => {
-    console.log('[server] Initial poll complete — sweeping for idle printers');
+    const recovered = scheduler.reconcileActivePrints();
+    startupReconciled = true;
+    console.log(`[server] Initial poll complete — reconciled ${recovered} active print(s), sweeping for idle printers`);
     scheduler.sweepIdlePrinters();
   });
 
@@ -130,6 +133,9 @@ const server = app.listen(PORT, () => {
   // batched sweep (dispatch_batch_size at a time, waits for each batch to reach printing before the next).
   // Used by the "Set Ready (N)" action in the Fleet UI.
   app.post('/api/printers/set-ready-batch', (req, res) => {
+    if (!startupReconciled) {
+      return res.status(503).json({ error: 'Initial printer status check is still running. Please try again shortly.' });
+    }
     const { ids } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: 'ids array required' });
@@ -176,11 +182,39 @@ const server = app.listen(PORT, () => {
   // (using confirmed_qty if provided, otherwise the full parts_per_plate) and mark the
   // job finished. No assumptions are made without operator input.
   app.post('/api/printers/:id/set-ready', (req, res) => {
+    if (!startupReconciled) {
+      return res.status(503).json({ error: 'Initial printer status check is still running. Please try again shortly.' });
+    }
     const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
     if (!printer) return res.status(404).json({ error: 'Printer not found' });
 
     const { confirmed_qty } = req.body || {};
     const now = Date.now();
+
+    // Never turn an actively printing/paused job into a finished job merely
+    // because the operator clicked the confirmation action after a restart.
+    // The live printer state is authoritative. Recover an uploading DB row,
+    // preserve its original timestamp, clear a stale hold, and wait for a real
+    // FINISHED/IDLE transition.
+    if (printer.status === 'PRINTING' || printer.status === 'PAUSED') {
+      const liveJob = db.prepare(`
+        SELECT * FROM jobs WHERE printer_id=? AND status IN ('uploading','printing')
+        ORDER BY COALESCE(started_at, created_at) DESC LIMIT 1
+      `).get(printer.id);
+      if (liveJob) {
+        db.prepare(`
+          UPDATE jobs SET status='printing', started_at=COALESCE(started_at, created_at, ?)
+          WHERE id=?
+        `).run(now, liveJob.id);
+        db.prepare('UPDATE printers SET is_held=0 WHERE id=?').run(printer.id);
+        console.log(`[server] ${printer.name} reports ${printer.status} — job ${liveJob.id} remains active; success confirmation ignored`);
+        return res.json({
+          ...db.prepare('SELECT * FROM printers WHERE id=?').get(printer.id),
+          job_still_running: true,
+          active_job_id: liveJob.id,
+        });
+      }
+    }
 
     // Check for an uploading or printing job FIRST — they take priority over a stale
     // 'finished' job from a previous print cycle. Without this check, a printer that has
@@ -339,7 +373,7 @@ const server = app.listen(PORT, () => {
           } else {
             // Printer is still mid-print — transition to 'printing' so _handleFinished
             // picks it up normally when the print completes.
-            db.prepare("UPDATE jobs SET status = 'printing', started_at = ? WHERE id = ?")
+            db.prepare("UPDATE jobs SET status = 'printing', started_at = COALESCE(started_at, created_at, ?) WHERE id = ?")
               .run(now, uploadingJob.id);
             console.log(`[server] ${printer.name} upload-stalled job ${uploadingJob.id} confirmed running by operator — changed to printing`);
           }

@@ -59,6 +59,41 @@ class JobScheduler extends EventEmitter {
     });
   }
 
+  // Reconcile persisted jobs with the first live printer poll after a server
+  // restart. A printer that is still PRINTING/PAUSED proves that its active job
+  // did not end while the server was down. Preserve the original start time,
+  // recover a possibly-stuck uploading row, and remove stale operator holds.
+  reconcileActivePrints() {
+    const active = this.db.prepare(`
+      SELECT j.id job_id, j.status job_status, j.started_at, j.created_at,
+             p.id printer_id, p.name printer_name, p.status printer_status, p.is_held
+      FROM jobs j JOIN printers p ON p.id = j.printer_id
+      WHERE j.status IN ('uploading', 'printing')
+        AND p.status IN ('PRINTING', 'PAUSED')
+        AND p.is_active = 1
+    `).all();
+
+    const reconcile = this.db.transaction(rows => {
+      for (const row of rows) {
+        if (row.job_status === 'uploading') {
+          this.db.prepare(`
+            UPDATE jobs SET status='printing', started_at=COALESCE(started_at, created_at)
+            WHERE id=?
+          `).run(row.job_id);
+        }
+        if (row.is_held) {
+          this.db.prepare('UPDATE printers SET is_held=0 WHERE id=?').run(row.printer_id);
+        }
+      }
+    });
+    reconcile(active);
+
+    for (const row of active) {
+      console.log(`[scheduler] Startup reconciliation: ${row.printer_name} is still ${row.printer_status}; job ${row.job_id} remains active`);
+    }
+    return active.length;
+  }
+
   // Sweep all currently idle non-held active printers, dispatching in batches of 10.
   // Each batch waits for all jobs to reach printing (or terminal) before the next batch fires.
   // Called when a project is activated or the server starts.
@@ -75,6 +110,7 @@ class JobScheduler extends EventEmitter {
     const eligiblePrinters = this.db.prepare(`
       SELECT * FROM printers
       WHERE status IN ('IDLE', 'FINISHED', 'STOPPED') AND is_held = 0 AND is_active = 1
+        AND type != 'manual'
     `).all();
 
     console.log(`[scheduler] Sweeping ${eligiblePrinters.length} eligible printer(s) (IDLE, operator-confirmed FINISHED, or resolved STOPPED)`);
@@ -140,6 +176,7 @@ class JobScheduler extends EventEmitter {
   // so that a printer set ready mid-sweep is added to the end of the current batch sequence
   // rather than firing concurrently with it.
   scheduleForPrinter(printer) {
+    if (printer.type === 'manual') return;
     if (this._isSweeping) {
       this._pendingPrinters.push(printer);
       console.log(`[scheduler] ${printer.name} set ready during sweep — deferred to end of sweep`);
