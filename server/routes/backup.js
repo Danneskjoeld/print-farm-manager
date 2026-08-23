@@ -24,42 +24,6 @@ function runUpload(req, res) {
   });
 }
 
-// Builds an INSERT statement covering the columns the live schema currently has for
-// `table` (via PRAGMA table_info) that are actually present in the backup's `rows`,
-// rather than a hand-maintained column list. A hardcoded list silently drifts out of
-// sync as migrations add columns over time — this is what let restore round-trip
-// printers/projects/parts/gcodes while quietly dropping serial_number,
-// loaded_material/loaded_color, project targeting, and gcode
-// allowed_groups/required_material/required_color/ams_slot/material_grams. Deriving the
-// column list from the table itself makes that whole bug class structurally impossible:
-// a newly-added column is included automatically, with no restore.js edit to remember.
-//
-// Columns missing from every row (e.g. an older backup predating a newer column) are
-// left out of the INSERT entirely so SQLite applies the column's own DEFAULT — binding
-// them as NULL instead would fail for NOT NULL DEFAULT columns like parts.sort_order.
-function makeInserter(db, table, rows) {
-  if (rows.length === 0) return { run() {} };
-
-  const liveColumns = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
-  const presentColumns = new Set();
-  for (const row of rows) {
-    for (const key of Object.keys(row)) presentColumns.add(key);
-  }
-  const columns = liveColumns.filter(c => presentColumns.has(c));
-
-  const stmt = db.prepare(`
-    INSERT INTO ${table} (${columns.join(', ')})
-    VALUES (${columns.map(c => '@' + c).join(', ')})
-  `);
-  return {
-    run(row) {
-      const params = {};
-      for (const c of columns) params[c] = row[c] !== undefined ? row[c] : null;
-      return stmt.run(params);
-    },
-  };
-}
-
 module.exports = (db) => {
   // GET /api/backup — export full farm as a downloadable JSON bundle
   router.get('/', (req, res) => {
@@ -69,11 +33,14 @@ module.exports = (db) => {
     const gcodes          = db.prepare('SELECT * FROM gcodes').all();
     const jobs            = db.prepare('SELECT * FROM jobs').all();
     const printer_events  = db.prepare('SELECT * FROM printer_events').all();
-    const printer_models  = db.prepare('SELECT * FROM printer_models').all();
-    const printer_groups  = db.prepare('SELECT * FROM printer_groups').all();
-    const filament_types  = db.prepare('SELECT * FROM filament_types').all();
+    const filament_rolls = db.prepare('SELECT * FROM filament_rolls').all();
+    const filament_types = db.prepare('SELECT * FROM filament_types').all();
     const filament_colors = db.prepare('SELECT * FROM filament_colors').all();
-    const settings        = db.prepare('SELECT * FROM settings').all();
+    const printer_filament_slots = db.prepare('SELECT * FROM printer_filament_slots').all();
+    const filament_transactions = db.prepare('SELECT * FROM filament_transactions').all();
+    const maintenance_plans = db.prepare('SELECT * FROM maintenance_plans').all();
+    const maintenance_records = db.prepare('SELECT * FROM maintenance_records').all();
+    const settings = db.prepare('SELECT * FROM settings').all();
 
     // Embed gcode files as base64, keyed by their on-disk basename
     const gcodeFiles = {};
@@ -85,7 +52,7 @@ module.exports = (db) => {
     }
 
     const backup = {
-      version: 1,
+      version: 2,
       exported_at: Date.now(),
       printers,
       projects,
@@ -93,11 +60,9 @@ module.exports = (db) => {
       gcodes,
       jobs,
       printer_events,
-      printer_models,
-      printer_groups,
-      filament_types,
-      filament_colors,
-      settings,
+      filament_types, filament_colors, filament_rolls,
+      printer_filament_slots, filament_transactions,
+      maintenance_plans, maintenance_records, settings,
       gcode_files: gcodeFiles,
     };
 
@@ -126,82 +91,114 @@ module.exports = (db) => {
         return res.status(400).json({ error: 'Unrecognised backup format' });
       }
 
-      // Write gcode files to disk before the DB transaction. Reject any key that isn't a
-      // bare filename — a crafted key like `../../server/poller.js` would otherwise resolve
-      // outside GCODE_DIR and let a malicious backup overwrite arbitrary app files.
-      const gcodeEntries = Object.entries(backup.gcode_files || {});
-      for (const [name] of gcodeEntries) {
-        if (path.basename(name) !== name || name === '.' || name === '..') {
-          return res.status(400).json({ error: `Invalid gcode file name in backup: ${name}` });
-        }
-      }
-      for (const [basename, b64] of gcodeEntries) {
+      // Write gcode files to disk before the DB transaction
+      for (const [basename, b64] of Object.entries(backup.gcode_files || {})) {
         fs.writeFileSync(path.join(GCODE_DIR, basename), Buffer.from(b64, 'base64'));
       }
 
-      // Older backups (pre-dating printer_models/filament/settings export) won't have these
-      // keys at all — guard each so restoring one doesn't wipe current config with nothing
-      // to restore it from. New backups always include all of them together.
-      const hasPrinterModels  = Array.isArray(backup.printer_models);
-      const hasPrinterGroups  = Array.isArray(backup.printer_groups);
-      const hasFilamentTypes  = Array.isArray(backup.filament_types);
-      const hasFilamentColors = Array.isArray(backup.filament_colors);
-      const hasSettings       = Array.isArray(backup.settings);
-
       const restore = db.transaction(() => {
         // Delete in FK dependency order
+        db.prepare('DELETE FROM filament_transactions').run();
+        db.prepare('DELETE FROM printer_filament_slots').run();
+        db.prepare('DELETE FROM maintenance_records').run();
+        db.prepare('DELETE FROM maintenance_plans').run();
+        db.prepare('DELETE FROM filament_rolls').run();
+        // Version 1 backups did not contain the Filament Library. Preserve the
+        // destination library for those older bundles rather than clearing it.
+        if (Array.isArray(backup.filament_types) && Array.isArray(backup.filament_colors)) {
+          db.prepare('DELETE FROM filament_colors').run();
+          db.prepare('DELETE FROM filament_types').run();
+        }
         db.prepare('DELETE FROM printer_events').run();
         db.prepare('DELETE FROM jobs').run();
         db.prepare('DELETE FROM gcodes').run();
         db.prepare('DELETE FROM parts').run();
         db.prepare('DELETE FROM projects').run();
         db.prepare('DELETE FROM printers').run();
-        if (hasFilamentColors) db.prepare('DELETE FROM filament_colors').run(); // before filament_types — FK on type_id
-        if (hasFilamentTypes)  db.prepare('DELETE FROM filament_types').run();
-        if (hasPrinterModels)  db.prepare('DELETE FROM printer_models').run();
-        if (hasPrinterGroups)  db.prepare('DELETE FROM printer_groups').run();
-        if (hasSettings)       db.prepare('DELETE FROM settings').run();
 
-        // Reinsert with original IDs so FK relationships are preserved. Each inserter
-        // covers the live-schema columns actually present in this backup's rows for that
-        // table — see makeInserter() above.
+        // Reinsert with original IDs so FK relationships are preserved
         const stmts = {
-          printer:        makeInserter(db, 'printers', backup.printers || []),
-          project:        makeInserter(db, 'projects', backup.projects || []),
-          part:           makeInserter(db, 'parts', backup.parts || []),
-          gcode:          makeInserter(db, 'gcodes', backup.gcodes || []),
-          job:            makeInserter(db, 'jobs', backup.jobs || []),
-          printer_event:  makeInserter(db, 'printer_events', backup.printer_events || []),
-          printer_model:  makeInserter(db, 'printer_models', backup.printer_models || []),
-          printer_group:  makeInserter(db, 'printer_groups', backup.printer_groups || []),
-          filament_type:  makeInserter(db, 'filament_types', backup.filament_types || []),
-          filament_color: makeInserter(db, 'filament_colors', backup.filament_colors || []),
-          setting:        makeInserter(db, 'settings', backup.settings || []),
+          printer: db.prepare(`
+            INSERT INTO printers
+              (id, name, ip, api_key, group_name, type, model, status,
+               is_held, is_active, created_at,
+               decommissioned_at, decommission_note,
+               job_name, job_progress, job_time_remaining, serial_number,
+               loaded_material, loaded_color, hourly_cost, power_watts)
+            VALUES
+              (@id, @name, @ip, @api_key, @group_name, @type, @model, @status,
+               @is_held, @is_active, @created_at,
+               @decommissioned_at, @decommission_note,
+               @job_name, @job_progress, @job_time_remaining, @serial_number,
+               @loaded_material, @loaded_color, @hourly_cost, @power_watts)
+          `),
+          project: db.prepare(`
+            INSERT INTO projects (id, name, description, status, priority, created_at, updated_at, required_material, required_color)
+            VALUES (@id, @name, @description, @status, @priority, @created_at, @updated_at, @required_material, @required_color)
+          `),
+          part: db.prepare(`
+            INSERT INTO parts
+              (id, project_id, name, target_qty, completed_qty, status, created_at, updated_at, sort_order)
+            VALUES
+              (@id, @project_id, @name, @target_qty, @completed_qty, @status, @created_at, @updated_at, @sort_order)
+          `),
+          gcode: db.prepare(`
+            INSERT INTO gcodes
+              (id, part_id, printer_model, filename, filepath, parts_per_plate, est_print_secs, created_at, ams_slot, material_grams, allowed_groups, required_material, required_color)
+            VALUES
+              (@id, @part_id, @printer_model, @filename, @filepath, @parts_per_plate, @est_print_secs, @created_at, @ams_slot, @material_grams, @allowed_groups, @required_material, @required_color)
+          `),
+          job: db.prepare(`
+            INSERT INTO jobs
+              (id, part_id, printer_id, gcode_id, parts_per_plate, status, started_at, finished_at, created_at, material_cost, machine_cost, energy_cost, maintenance_cost)
+            VALUES
+              (@id, @part_id, @printer_id, @gcode_id, @parts_per_plate, @status, @started_at, @finished_at, @created_at, @material_cost, @machine_cost, @energy_cost, @maintenance_cost)
+          `),
+          printer_event: db.prepare(`
+            INSERT INTO printer_events (id, printer_id, event_type, note, created_at)
+            VALUES (@id, @printer_id, @event_type, @note, @created_at)
+          `),
         };
 
-        // printer_models before printers — printers.model refers to it logically
-        for (const m of (backup.printer_models || [])) stmts.printer_model.run(m);
-        for (const g of (backup.printer_groups || [])) stmts.printer_group.run(g);
-        for (const p of (backup.printers || [])) stmts.printer.run(p);
-        for (const p of (backup.projects || [])) stmts.project.run(p);
+        for (const p of (backup.printers || [])) stmts.printer.run({serial_number:'',loaded_material:null,loaded_color:null,hourly_cost:0,power_watts:0,...p});
+        for (const p of (backup.projects || [])) stmts.project.run({required_material:null,required_color:null,...p});
         for (const p of (backup.parts    || [])) stmts.part.run(p);
         for (const g of (backup.gcodes   || [])) {
           // filepath stores just the filename — no path rewriting needed
-          stmts.gcode.run({ ...g, filepath: path.basename(g.filepath) });
+          stmts.gcode.run({ams_slot:null,material_grams:null,allowed_groups:null,required_material:null,required_color:null,...g, filepath: path.basename(g.filepath) });
         }
-        for (const j of (backup.jobs || [])) stmts.job.run(j);
+        for (const j of (backup.jobs || [])) stmts.job.run({material_cost:0,machine_cost:0,energy_cost:0,maintenance_cost:0,...j});
         for (const e of (backup.printer_events || [])) stmts.printer_event.run(e);
-        // filament_types before filament_colors — FK on type_id
-        for (const t of (backup.filament_types  || [])) stmts.filament_type.run(t);
-        for (const c of (backup.filament_colors || [])) stmts.filament_color.run(c);
-        for (const s of (backup.settings || [])) stmts.setting.run(s);
+
+        // Version 2 additions use column-aware inserts so future nullable columns
+        // remain backward compatible with older backup bundles.
+        const insertRows = (table, rows) => {
+          const allowed = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name));
+          for (const row of rows || []) {
+            const cols = Object.keys(row).filter(k => allowed.has(k));
+            if (!cols.length) continue;
+            db.prepare(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${cols.map(c=>'@'+c).join(',')})`).run(row);
+          }
+        };
+        insertRows('filament_types', backup.filament_types);
+        insertRows('filament_colors', backup.filament_colors);
+        insertRows('filament_rolls', backup.filament_rolls);
+        insertRows('printer_filament_slots', backup.printer_filament_slots);
+        insertRows('filament_transactions', backup.filament_transactions);
+        insertRows('maintenance_plans', backup.maintenance_plans);
+        insertRows('maintenance_records', backup.maintenance_records);
+        if (Array.isArray(backup.settings)) {
+          for (const s of backup.settings) db.prepare('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)').run(s.key,s.value);
+        }
 
         // Sync auto-increment counters so new inserts don't collide
         for (const [table, col] of [
           ['printers', 'printers'], ['projects', 'projects'],
           ['parts', 'parts'], ['gcodes', 'gcodes'], ['jobs', 'jobs'],
           ['printer_events', 'printer_events'],
+          ['filament_rolls', 'filament_rolls'], ['filament_transactions', 'filament_transactions'],
           ['filament_types', 'filament_types'], ['filament_colors', 'filament_colors'],
+          ['maintenance_plans', 'maintenance_plans'], ['maintenance_records', 'maintenance_records'],
         ]) {
           db.prepare(`
             INSERT OR REPLACE INTO sqlite_sequence (name, seq)
@@ -212,20 +209,16 @@ module.exports = (db) => {
 
       restore();
 
-      console.log(`[backup] Farm restored: ${backup.printers.length} printers, ${backup.projects.length} projects, ${backup.gcodes.length} gcodes, ${backup.jobs.length} jobs, ${(backup.printer_events || []).length} events, ${(backup.printer_models || []).length} printer models, ${(backup.printer_groups || []).length} groups, ${(backup.filament_types || []).length} filament types, ${(backup.filament_colors || []).length} filament colors`);
+      console.log(`[backup] Farm restored — ${backup.printers.length} printers, ${backup.projects.length} projects, ${backup.gcodes.length} gcodes, ${backup.jobs.length} jobs, ${(backup.printer_events || []).length} events`);
 
       res.json({
         ok: true,
-        printers:        (backup.printers        || []).length,
-        projects:        (backup.projects        || []).length,
-        parts:           (backup.parts           || []).length,
-        gcodes:          (backup.gcodes          || []).length,
-        jobs:            (backup.jobs            || []).length,
-        printer_events:  (backup.printer_events  || []).length,
-        printer_models:  (backup.printer_models  || []).length,
-        printer_groups:  (backup.printer_groups  || []).length,
-        filament_types:  (backup.filament_types  || []).length,
-        filament_colors: (backup.filament_colors || []).length,
+        printers:       (backup.printers       || []).length,
+        projects:       (backup.projects       || []).length,
+        parts:          (backup.parts          || []).length,
+        gcodes:         (backup.gcodes         || []).length,
+        jobs:           (backup.jobs           || []).length,
+        printer_events: (backup.printer_events || []).length,
       });
     } catch (err) {
       console.error('[backup] restore error:', err);

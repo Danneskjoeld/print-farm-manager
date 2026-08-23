@@ -6,10 +6,22 @@
 
 jest.mock('mqtt');
 jest.mock('basic-ftp');
+jest.mock('fs');
 
 const mqtt = require('mqtt');
 const ftp  = require('basic-ftp');
+const fs   = require('fs');
 const bambu = require('../drivers/bambu');
+
+function zipCentralDirectory(...names) {
+  return Buffer.concat(names.map(name => {
+    const n = Buffer.from(name);
+    const header = Buffer.alloc(46);
+    header.writeUInt32LE(0x02014b50, 0);
+    header.writeUInt16LE(n.length, 28);
+    return Buffer.concat([header, n]);
+  }));
+}
 
 // ─── Mock setup ───────────────────────────────────────────────────────────────
 
@@ -23,7 +35,17 @@ let mockFtpClient;
 beforeEach(() => {
   messageHandler = null;
 
-  mockPublish   = jest.fn();
+  mockPublish   = jest.fn((_topic, payload, callback) => {
+    if (typeof callback === 'function') callback(null);
+    try {
+      const print = JSON.parse(payload).print;
+      if (print?.command === 'project_file' && messageHandler) {
+        messageHandler(null, Buffer.from(JSON.stringify({
+          print: { sequence_id: print.sequence_id, command: 'project_file', result: 'success', gcode_state: 'PREPARE' },
+        })));
+      }
+    } catch (_) {}
+  });
   mockSubscribe = jest.fn();
 
   mockMqttClient = {
@@ -46,6 +68,7 @@ beforeEach(() => {
     close:      jest.fn(),
   };
   ftp.Client.mockImplementation(() => mockFtpClient);
+  fs.readFileSync.mockReturnValue(zipCentralDirectory('Metadata/plate_1.gcode'));
 });
 
 afterEach(() => jest.clearAllMocks());
@@ -187,6 +210,35 @@ describe('getStatus — FAILED: user cancel vs real failure', () => {
 // ─── uploadAndPrint — .3mf ────────────────────────────────────────────────────
 
 describe('uploadAndPrint — .3mf (project_file)', () => {
+  test('uses the actual plate G-code path contained in the 3MF', async () => {
+    fs.readFileSync.mockReturnValue(zipCentralDirectory(
+      'Metadata/plate_5.png', 'Metadata/plate_5.gcode'
+    ));
+    const printer = nextPrinter();
+    bambu.getStatus(printer);
+    mockPublish.mockClear();
+
+    await bambu.uploadAndPrint(printer, '/tmp/job_plate_5.gcode.3mf', 'job_plate_5.gcode.3mf', { amsSlot: 1 });
+
+    expect(findPayload('project_file').param).toBe('Metadata/plate_5.gcode');
+  });
+
+  test('selects the filename plate number when a 3MF contains multiple plates', () => {
+    fs.readFileSync.mockReturnValue(zipCentralDirectory(
+      'Metadata/plate_1.gcode', 'Metadata/plate_3.gcode'
+    ));
+    expect(bambu.resolvePlateGcode('/tmp/multi.3mf', 'part_plate_3.gcode.3mf'))
+      .toBe('Metadata/plate_3.gcode');
+  });
+
+  test('rejects an ambiguous multi-plate 3MF instead of silently starting plate 1', () => {
+    fs.readFileSync.mockReturnValue(zipCentralDirectory(
+      'Metadata/plate_1.gcode', 'Metadata/plate_2.gcode'
+    ));
+    expect(() => bambu.resolvePlateGcode('/tmp/multi.3mf', 'project.3mf'))
+      .toThrow(/multiple printable plates/);
+  });
+
   test('uses project_file MQTT command', async () => {
     const printer = nextPrinter();
     bambu.getStatus(printer);

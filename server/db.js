@@ -107,7 +107,77 @@ try { db.exec('ALTER TABLE gcodes ADD COLUMN required_material TEXT'); } catch (
 try { db.exec('ALTER TABLE gcodes ADD COLUMN required_color TEXT'); } catch (_) {}
 try { db.exec('ALTER TABLE projects ADD COLUMN required_material TEXT'); } catch (_) {}
 try { db.exec('ALTER TABLE projects ADD COLUMN required_color TEXT'); } catch (_) {}
-try { db.exec('ALTER TABLE projects ADD COLUMN allowed_groups TEXT'); } catch (_) {}
+try { db.exec('ALTER TABLE printers ADD COLUMN hourly_cost REAL DEFAULT 0'); } catch (_) {}
+try { db.exec('ALTER TABLE printers ADD COLUMN power_watts REAL DEFAULT 0'); } catch (_) {}
+try { db.exec('ALTER TABLE jobs ADD COLUMN material_cost REAL DEFAULT 0'); } catch (_) {}
+try { db.exec('ALTER TABLE jobs ADD COLUMN machine_cost REAL DEFAULT 0'); } catch (_) {}
+try { db.exec('ALTER TABLE jobs ADD COLUMN energy_cost REAL DEFAULT 0'); } catch (_) {}
+try { db.exec('ALTER TABLE jobs ADD COLUMN maintenance_cost REAL DEFAULT 0'); } catch (_) {}
+
+// Inventory, maintenance and cost accounting. Transactions are append-only so
+// automatic consumption and later operator corrections remain auditable.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS filament_rolls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    material TEXT NOT NULL,
+    color TEXT,
+    manufacturer TEXT,
+    lot_number TEXT,
+    location TEXT,
+    initial_weight_g REAL NOT NULL,
+    remaining_weight_g REAL NOT NULL,
+    spool_weight_g REAL DEFAULT 0,
+    purchase_price REAL DEFAULT 0,
+    min_weight_g REAL DEFAULT 100,
+    status TEXT DEFAULT 'available',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS printer_filament_slots (
+    printer_id INTEGER NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
+    slot INTEGER NOT NULL DEFAULT 0,
+    roll_id INTEGER REFERENCES filament_rolls(id) ON DELETE SET NULL,
+    PRIMARY KEY (printer_id, slot),
+    UNIQUE (roll_id)
+  );
+  CREATE TABLE IF NOT EXISTS filament_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    roll_id INTEGER NOT NULL REFERENCES filament_rolls(id) ON DELETE CASCADE,
+    job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+    type TEXT NOT NULL,
+    amount_g REAL NOT NULL,
+    balance_after_g REAL NOT NULL,
+    note TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_filament_job_consumption
+    ON filament_transactions(job_id) WHERE job_id IS NOT NULL AND type = 'consumption';
+
+  CREATE TABLE IF NOT EXISTS maintenance_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    printer_id INTEGER NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT,
+    interval_days INTEGER,
+    interval_print_hours REAL,
+    last_completed_at INTEGER,
+    last_completed_print_hours REAL DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS maintenance_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    printer_id INTEGER NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
+    plan_id INTEGER REFERENCES maintenance_plans(id) ON DELETE SET NULL,
+    performed_at INTEGER NOT NULL,
+    print_hours REAL DEFAULT 0,
+    cost REAL DEFAULT 0,
+    notes TEXT,
+    performed_by TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_maintenance_printer ON maintenance_records(printer_id, performed_at DESC);
+`);
 
 // Printer models — source of truth for which models this farm supports.
 // New installs start empty; operator adds models in Settings.
@@ -150,61 +220,6 @@ try {
   }
 } catch (_) {}
 
-// Printer groups: persisted registry, independent of which printers currently
-// carry a given group_name. Without this, a group referenced only by a gcode's
-// or project's allowed_groups (every printer since reassigned elsewhere) used
-// to vanish from every picker with no UI trace, while the scheduler kept
-// silently enforcing the now-unfillable restriction forever. New installs
-// start empty; operator adds groups in Settings, or one is auto-registered the
-// moment it's typed on a printer. Existing installs auto-seed below from every
-// group name already referenced anywhere in the live DB.
-try {
-  db.exec(`CREATE TABLE IF NOT EXISTS printer_groups (
-    name        TEXT PRIMARY KEY,
-    created_at  INTEGER NOT NULL
-  )`);
-} catch (_) {}
-
-try {
-  const now = Date.now();
-  const insertGroup = db.prepare(
-    'INSERT OR IGNORE INTO printer_groups (name, created_at) VALUES (?, ?)'
-  );
-
-  for (const row of db.prepare(
-    "SELECT DISTINCT group_name AS g FROM printers WHERE group_name IS NOT NULL AND group_name != ''"
-  ).all()) {
-    insertGroup.run(row.g, now);
-  }
-
-  // Recover any group name that only survives inside a JSON allowed_groups
-  // array (gcodes and, once the ALTER above has run, projects). This is the
-  // exact scenario that used to leave a restriction with no visible name
-  // anywhere to reassign a printer back into. Parsed per row in JS, not one
-  // big SQL json_each UNION: a single malformed value must not abort the
-  // whole seed and silently leave every other row unrecovered.
-  for (const table of ['gcodes', 'projects']) {
-    const hasColumn = db.prepare(`PRAGMA table_info(${table})`).all()
-      .some((c) => c.name === 'allowed_groups');
-    if (!hasColumn) continue;
-
-    for (const row of db.prepare(
-      `SELECT allowed_groups AS ag FROM ${table} WHERE allowed_groups IS NOT NULL`
-    ).all()) {
-      try {
-        const names = JSON.parse(row.ag);
-        if (Array.isArray(names)) {
-          for (const name of names) {
-            if (name) insertGroup.run(name, now);
-          }
-        }
-      } catch (_) {
-        // One row's malformed JSON doesn't block recovering the rest.
-      }
-    }
-  }
-} catch (_) {}
-
 // Filament library — canonical lists managed in Settings
 try {
   db.exec(`CREATE TABLE IF NOT EXISTS filament_types (
@@ -244,6 +259,35 @@ try {
   }
 } catch (_) {}
 
+// Connect physical inventory rolls to the canonical Filament Library. The old
+// text columns remain as readable snapshots for backup compatibility, while the
+// IDs are now the source of truth for all new and edited rolls.
+try { db.exec('ALTER TABLE filament_rolls ADD COLUMN filament_type_id INTEGER REFERENCES filament_types(id)'); } catch (_) {}
+try { db.exec('ALTER TABLE filament_rolls ADD COLUMN filament_color_id INTEGER REFERENCES filament_colors(id)'); } catch (_) {}
+try { db.exec('ALTER TABLE filament_rolls ADD COLUMN roll_count INTEGER NOT NULL DEFAULT 1'); } catch (_) {}
+try {
+  db.exec(`
+    UPDATE filament_rolls
+    SET filament_type_id = (
+      SELECT id FROM filament_types WHERE lower(name) = lower(filament_rolls.material) LIMIT 1
+    )
+    WHERE filament_type_id IS NULL;
+
+    UPDATE filament_rolls
+    SET filament_color_id = (
+      SELECT fc.id FROM filament_colors fc
+      WHERE fc.type_id = filament_rolls.filament_type_id
+        AND lower(fc.name) = lower(filament_rolls.color)
+      LIMIT 1
+    )
+    WHERE filament_color_id IS NULL;
+  `);
+} catch (_) {}
+// Names identify inventory stock items. Existing installations with duplicates
+// are left untouched and handled by the API until the operator renames them;
+// clean databases receive an additional case-insensitive database constraint.
+try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_filament_rolls_name_nocase ON filament_rolls(name COLLATE NOCASE)'); } catch (_) {}
+
 // Settings table — key/value store for operator-configurable options
 try {
   db.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
@@ -251,6 +295,7 @@ try {
 // Seed defaults (INSERT OR IGNORE so existing values are never overwritten)
 try {
   db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('dispatch_batch_size', '10')").run();
+  db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('electricity_price_kwh', '0.30')").run();
 } catch (_) {}
 
 // Make jobs.gcode_id nullable so gcodes can be deleted after jobs have run
@@ -258,6 +303,10 @@ const gcodeIdCol = db.prepare("PRAGMA table_info(jobs)").all().find(c => c.name 
 if (gcodeIdCol && gcodeIdCol.notnull === 1) {
   db.exec(`
     PRAGMA foreign_keys = OFF;
+    -- A previous interrupted migration may have left this staging table behind.
+    -- The authoritative jobs table is still present at this point, so rebuilding
+    -- the staging table is safe and makes the migration restartable.
+    DROP TABLE IF EXISTS jobs_migrated;
     CREATE TABLE jobs_migrated (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
       part_id          INTEGER NOT NULL REFERENCES parts(id),
@@ -267,11 +316,24 @@ if (gcodeIdCol && gcodeIdCol.notnull === 1) {
       status           TEXT DEFAULT 'queued',
       started_at       INTEGER,
       finished_at      INTEGER,
-      created_at       INTEGER NOT NULL
+      created_at       INTEGER NOT NULL,
+      material_cost    REAL DEFAULT 0,
+      machine_cost     REAL DEFAULT 0,
+      energy_cost      REAL DEFAULT 0,
+      maintenance_cost REAL DEFAULT 0
     );
-    INSERT INTO jobs_migrated SELECT * FROM jobs;
+    INSERT INTO jobs_migrated
+      (id, part_id, printer_id, gcode_id, parts_per_plate, status,
+       started_at, finished_at, created_at, material_cost, machine_cost,
+       energy_cost, maintenance_cost)
+    SELECT id, part_id, printer_id, gcode_id, parts_per_plate, status,
+           started_at, finished_at, created_at,
+           COALESCE(material_cost, 0), COALESCE(machine_cost, 0),
+           COALESCE(energy_cost, 0), COALESCE(maintenance_cost, 0)
+    FROM jobs;
     DROP TABLE jobs;
     ALTER TABLE jobs_migrated RENAME TO jobs;
+    CREATE INDEX IF NOT EXISTS idx_jobs_printer_started ON jobs(printer_id, started_at DESC);
     PRAGMA foreign_keys = ON;
   `);
 }

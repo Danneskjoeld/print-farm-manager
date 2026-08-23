@@ -66,6 +66,10 @@ module.exports = (db) => {
   });
 
   router.delete('/colors/:id', (req, res) => {
+    const rollCount = db.prepare('SELECT COUNT(*) AS count FROM filament_rolls WHERE filament_color_id = ?').get(req.params.id);
+    if (rollCount.count > 0) {
+      return res.status(409).json({ error: `Cannot delete — ${rollCount.count} inventory roll(s) use this material.` });
+    }
     const result = db.prepare('DELETE FROM filament_colors WHERE id = ?').run(req.params.id);
     if (result.changes === 0) return res.status(404).json({ error: 'Not found' });
     res.json({ ok: true });

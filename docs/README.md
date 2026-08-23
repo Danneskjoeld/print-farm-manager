@@ -1,6 +1,6 @@
 # Print Farm Manager — Documentation
 
-A locally-hosted web app for managing a multi-brand 3D printer farm. Replaces manual USB job distribution with centralized status monitoring and automated job dispatch. Supports Prusa (PrusaLink), Elegoo Centauri (SDCP), Bambu (MQTT), Klipper (Moonraker), and OctoPrint printers.
+A locally-hosted web app for managing a multi-brand 3D printer farm. Replaces manual USB job distribution with centralized status monitoring and automated job dispatch. Supports Prusa (PrusaLink), Elegoo Centauri (SDCP), and Bambu (MQTT) printers.
 
 ## Quick Start
 
@@ -12,8 +12,6 @@ npm run dev
 
 - API: `http://localhost:3000`
 - UI: `http://localhost:5173`
-
-Prefer Docker over a local Node.js install? `docker compose up --build print-farm-manager-dev` runs the same workflow in a container — see the [README](../README.md#quick-start-development).
 
 ## Documentation Index
 
@@ -27,9 +25,8 @@ Prefer Docker over a local Node.js install? `docker compose up --build print-far
 | [docs/web-app.md](web-app.md) | React client — pages, routing, layout, live-update pattern |
 | [docs/CHANGELOG.md](CHANGELOG.md) | Dated log of all implemented features and changes |
 | [docs/multi-brand.md](multi-brand.md) | Phase 6 design — driver abstraction for non-Prusa brands (Elegoo Centauri Carbon) |
-| [docs/driver-authoring.md](driver-authoring.md) | Connector authoring guide for manufacturers and contributors: driver contract, canonical statuses, registration checklist, hardware test matrix |
 | [docs/filaments.md](filaments.md) | Filament Library — admin-managed type and color lists, API endpoints, client usage |
-| [docs/docker-publish.md](docker-publish.md) | CI workflow that builds and publishes multi-arch Docker images to GHCR |
+| [docs/inventory-maintenance-costs.md](inventory-maintenance-costs.md) | Physical filament rolls, maintenance schedules/history, and job/project costs |
 
 ## Project Structure
 
@@ -67,10 +64,7 @@ print-farm-manager/
 │   │       ├── Projects.jsx       # Project/Part/G-code management
 │   │       └── Jobs.jsx           # Job queue table
 ├── docs/                 # This folder
-├── .github/workflows/    # CI — see docs/docker-publish.md
-├── ARCHITECTURE.md       # Full product spec and phase planning
-├── Dockerfile            # Multi-stage: server-deps/client-build/runtime (production) + dev
-└── docker-compose.yml    # Production container + persistent volumes, plus an opt-in `dev` profile
+└── ARCHITECTURE.md       # Full product spec and phase planning
 ```
 
 ## Development Phases
@@ -85,6 +79,5 @@ print-farm-manager/
 | 6A | Complete | Driver abstraction layer — Prusa extracted into `server/drivers/prusa.js`; registry wired |
 | 6B | Complete | Elegoo Centauri Carbon SDCP driver via `sdcp` package; UI and route changes for non-Prusa brands |
 | 6C | Complete | Klipper (Moonraker) driver — Voron and all Klipper-firmware printers via plain HTTP on port 7125 |
-| 6D | Complete | OctoPrint driver — any OctoPrint/OctoPi-managed printer via OctoPrint's own REST API |
 
 See [ARCHITECTURE.md](../ARCHITECTURE.md) for full product spec.

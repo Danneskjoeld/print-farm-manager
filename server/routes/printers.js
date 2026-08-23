@@ -1,4 +1,5 @@
 const express = require('express');
+const { accountFinishedJob } = require('../production-accounting');
 const multer = require('multer');
 const Papa = require('papaparse');
 const axios = require('axios');
@@ -32,15 +33,6 @@ function resolveModel(rawModel, name) {
 }
 
 module.exports = (db) => {
-  // Silently keeps the printer_groups registry a superset of every group name
-  // ever assigned to a printer, so a group can never again vanish from a
-  // picker just because no printer currently carries it. Zero added friction:
-  // the group_name field stays free text everywhere a printer is created or
-  // edited; this is the only place a new name gets persisted into the registry.
-  const registerGroup = db.prepare(
-    'INSERT OR IGNORE INTO printer_groups (name, created_at) VALUES (?, ?)'
-  );
-
   // GET /api/printers — list active printers only
   // Includes last_parts_per_plate from the most recent job (finished/printing/failed/cancelled),
   // used by the Fleet UI to pre-fill the confirmed-qty input on held printers.
@@ -71,6 +63,19 @@ module.exports = (db) => {
       ORDER BY p.name
     `).all();
     res.json(printers);
+  });
+
+  // GET /api/printers/groups — distinct non-null group names from active printers
+  router.get('/groups', (req, res) => {
+    const { model } = req.query;
+    const groups = model
+      ? db.prepare(
+          "SELECT DISTINCT group_name FROM printers WHERE is_active = 1 AND group_name IS NOT NULL AND model = ? ORDER BY group_name"
+        ).all(model).map(r => r.group_name)
+      : db.prepare(
+          "SELECT DISTINCT group_name FROM printers WHERE is_active = 1 AND group_name IS NOT NULL ORDER BY group_name"
+        ).all().map(r => r.group_name);
+    res.json(groups);
   });
 
   // GET /api/printers/filaments — distinct loaded_material and loaded_color values across all printers
@@ -134,11 +139,6 @@ module.exports = (db) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(name, ip, api_key || '', serial_number || '', group_name || null, printerType, normalized,
              loaded_material || null, loaded_color || null, Date.now());
-      // Best-effort convenience: a failure here must never turn an already-
-      // committed printer creation into a reported error.
-      if (group_name && group_name.trim()) {
-        try { registerGroup.run(group_name.trim(), Date.now()); } catch (_) {}
-      }
       res.status(201).json(db.prepare('SELECT * FROM printers WHERE id = ?').get(result.lastInsertRowid));
     } catch (err) {
       if (err.message.includes('UNIQUE')) {
@@ -153,7 +153,7 @@ module.exports = (db) => {
     const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
     if (!printer) return res.status(404).json({ error: 'Printer not found' });
 
-    const { name, ip, api_key, serial_number, group_name, type, model, is_held, decommission_note, loaded_material, loaded_color } = req.body;
+    const { name, ip, api_key, serial_number, group_name, type, model, is_held, decommission_note, loaded_material, loaded_color, hourly_cost, power_watts } = req.body;
     let normalized = undefined;
     if (model !== undefined) {
       normalized = normalizeModel(model);
@@ -194,19 +194,13 @@ module.exports = (db) => {
             group_name = COALESCE(?, group_name),
             type = COALESCE(?, type),
             model = COALESCE(?, model),
-            is_held = COALESCE(?, is_held),
+            is_held = COALESCE(?, is_held), hourly_cost = COALESCE(?, hourly_cost), power_watts = COALESCE(?, power_watts),
             decommission_note = COALESCE(?, decommission_note),
             loaded_material = ?,
             loaded_color = ?
         WHERE id = ?
-      `).run(name, ip, api_key, serial_number, group_name, type, normalized, is_held, decommission_note ?? null,
+      `).run(name, ip, api_key, serial_number, group_name, type, normalized, is_held, hourly_cost == null ? null : Number(hourly_cost), power_watts == null ? null : Number(power_watts), decommission_note ?? null,
              newMaterial, newColor, req.params.id);
-
-      // Best-effort convenience: a failure here must never turn an already-
-      // committed printer update into a reported error.
-      if (group_name !== undefined && group_name && group_name.trim()) {
-        try { registerGroup.run(group_name.trim(), Date.now()); } catch (_) {}
-      }
 
       // Log one event per changed field
       for (const [field, label] of Object.entries(FIELD_LABELS)) {
@@ -299,6 +293,7 @@ module.exports = (db) => {
     if (printingJob) {
       const creditQty = parsedQty != null ? parsedQty : printingJob.parts_per_plate;
       db.prepare(`UPDATE jobs SET status = 'finished', finished_at = ? WHERE id = ?`).run(now, printingJob.id);
+      accountFinishedJob(db, printingJob.id);
       db.prepare(`UPDATE parts SET completed_qty = MAX(0, completed_qty + ?), updated_at = ? WHERE id = ?`)
         .run(creditQty, now, printingJob.part_id);
       settlePart(printingJob.part_id);
@@ -500,13 +495,7 @@ module.exports = (db) => {
       }
 
       try {
-        const now = Date.now();
-        insertStmt.run(name, ip, api_key, serial_number, group_name, type, model, now);
-        // Best-effort convenience: a failure here must never flag an
-        // already-committed row as failed.
-        if (group_name) {
-          try { registerGroup.run(group_name, now); } catch (_) {}
-        }
+        insertStmt.run(name, ip, api_key, serial_number, group_name, type, model, Date.now());
         summary.imported++;
       } catch (err) {
         summary.flagged.push({ row, reason: err.message });

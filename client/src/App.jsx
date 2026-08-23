@@ -8,6 +8,9 @@ import Projects from './pages/Projects';
 import Jobs from './pages/Jobs';
 import Settings from './pages/Settings';
 import Decommissioned from './pages/Decommissioned';
+import Inventory from './pages/Inventory';
+import Maintenance from './pages/Maintenance';
+import Costs from './pages/Costs';
 
 const NAV_ITEMS = [
   { to: '/',               label: 'Dashboard' },
@@ -15,6 +18,9 @@ const NAV_ITEMS = [
   { to: '/printers',       label: 'Printers',      end: true },
   { to: '/projects',       label: 'Projects' },
   { to: '/jobs',           label: 'Jobs' },
+  { to: '/inventory',      label: 'Inventory' },
+  { to: '/maintenance',    label: 'Maintenance' },
+  { to: '/costs',          label: 'Costs' },
   { to: '/decommissioned', label: 'Decommissioned' },
   { to: '/settings',       label: 'Settings' },
 ];
@@ -40,12 +46,6 @@ export default function App() {
       .then(r => r.json())
       .then(data => { if (data.farm_name) setFarmName(data.farm_name); })
       .catch(() => {});
-
-    // Settings page dispatches this on save so the sidebar/topbar update live,
-    // without needing a full page refresh.
-    const onFarmNameChanged = (e) => setFarmName(e.detail);
-    window.addEventListener('farmNameChanged', onFarmNameChanged);
-    return () => window.removeEventListener('farmNameChanged', onFarmNameChanged);
   }, []);
 
   return (
@@ -110,6 +110,9 @@ export default function App() {
             <Route path="/printers/:id"    element={<PrinterDetail />} />
             <Route path="/projects"        element={<Projects />} />
             <Route path="/jobs"            element={<Jobs />} />
+            <Route path="/inventory"       element={<Inventory />} />
+            <Route path="/maintenance"     element={<Maintenance />} />
+            <Route path="/costs"           element={<Costs />} />
             <Route path="/decommissioned"  element={<Decommissioned />} />
             <Route path="/settings"        element={<Settings />} />
           </Routes>

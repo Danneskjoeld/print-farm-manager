@@ -21,14 +21,18 @@ const events         = require('./events');
 const backup         = require('./backup');
 
 const printersRouter     = require('./routes/printers')(db);
+const partsRouter        = require('./routes/parts')(db);
+const gcodesRouter       = require('./routes/gcodes')(db);
 const jobsRouter         = require('./routes/jobs')(db);
 const backupRouter       = require('./routes/backup')(db);
 const dashboardRouter    = require('./routes/dashboard')(db);
 const settingsRouter     = require('./routes/settings')(db);
 const modelsRouter       = require('./routes/models')(db);
-const groupsRouter       = require('./routes/groups')(db);
 const filamentsRouter    = require('./routes/filaments')(db);
 const printerJobsRouter  = require('./routes/printer-jobs')(db);
+const inventoryRouter    = require('./routes/inventory')(db);
+const maintenanceRouter  = require('./routes/maintenance')(db);
+const costsRouter        = require('./routes/costs')(db);
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -38,13 +42,17 @@ app.use(express.json());
 // API routes
 app.use('/api/printers',        printersRouter);
 app.use('/api/printers/:id/jobs', printerJobsRouter);
+app.use('/api/parts',           partsRouter);
+app.use('/api/gcodes',          gcodesRouter);
 app.use('/api/jobs',            jobsRouter);
 app.use('/api/backup',          backupRouter);
 app.use('/api/dashboard',       dashboardRouter);
 app.use('/api/settings',        settingsRouter);
 app.use('/api/models',          modelsRouter);
-app.use('/api/groups',          groupsRouter);
 app.use('/api/filaments',       filamentsRouter);
+app.use('/api/inventory',       inventoryRouter);
+app.use('/api/maintenance',     maintenanceRouter);
+app.use('/api/costs',           costsRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -57,6 +65,17 @@ app.delete('/api/notifications/:id', (req, res) => {
   const ok = notifications.dismiss(parseInt(req.params.id, 10));
   if (!ok) return res.status(404).json({ error: 'Notification not found' });
   res.json({ ok: true });
+});
+
+// G-code file download endpoint — used by the Elegoo CC2 driver.
+// The CC2 pulls files over HTTP rather than accepting a push. The driver constructs
+// a URL pointing here and sends it to the printer via MQTT method 1057 (DOWNLOAD_FILE).
+// path.basename() prevents path traversal; only files in the gcode directory are served.
+app.get('/api/gcode-download/:filename', (req, res) => {
+  const filename = path.basename(req.params.filename);
+  const filePath = path.join(__dirname, 'gcode', filename);
+  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+  res.sendFile(filePath);
 });
 
 // Serve built React client (production mode)
@@ -86,13 +105,8 @@ const server = app.listen(PORT, () => {
   const poller    = new PrinterPoller(db);
   const scheduler = new JobScheduler(db, poller);
 
-  // Mount projects, parts, and gcodes routers here so they have access to the
-  // scheduler: projects for complete/reactivate, parts for the sweep after adding a
-  // part (or raising target_qty) reactivates a completed project, gcodes for the sweep
-  // after an upload gives a part its first matching G-code.
+  // Mount projects router here so it has access to the scheduler for complete/reactivate
   app.use('/api/projects', require('./routes/projects')(db, scheduler));
-  app.use('/api/parts',    require('./routes/parts')(db, scheduler));
-  app.use('/api/gcodes',   require('./routes/gcodes')(db, scheduler));
 
   scheduler.start();
   poller.start();
@@ -113,9 +127,7 @@ const server = app.listen(PORT, () => {
   });
 
   // Bulk set-ready — releases hold for multiple printers and dispatches through the
-  // batched sweep, which keeps pulling from the ready queue until dispatch_batch_size
-  // printers actually have a job reserved (or the queue runs out), not a fixed chunk
-  // of dispatch_batch_size printers evaluated at a time (see _sweepInBatches).
+  // batched sweep (dispatch_batch_size at a time, waits for each batch to reach printing before the next).
   // Used by the "Set Ready (N)" action in the Fleet UI.
   app.post('/api/printers/set-ready-batch', (req, res) => {
     const { ids } = req.body;
@@ -127,7 +139,7 @@ const server = app.listen(PORT, () => {
     const printers = db.prepare(`SELECT * FROM printers WHERE id IN (${placeholders}) AND is_active = 1`).all(...ids);
     const batchSetting = db.prepare("SELECT value FROM settings WHERE key = 'dispatch_batch_size'").get();
     const batchSize = batchSetting ? parseInt(batchSetting.value, 10) : 10;
-    console.log(`[server] Batch set-ready: ${printers.length} printer(s), target concurrency ${batchSize}`);
+    console.log(`[server] Batch set-ready: ${printers.length} printer(s) — dispatching in batches of ${batchSize}`);
     scheduler._sweepInBatches(printers).catch(err =>
       console.error('[scheduler] Batch set-ready sweep error:', err)
     );

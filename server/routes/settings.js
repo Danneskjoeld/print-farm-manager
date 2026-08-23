@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 
-const ALLOWED_KEYS = new Set(['dispatch_batch_size', 'farm_name']);
+const ALLOWED_KEYS = new Set(['dispatch_batch_size', 'farm_name', 'electricity_price_kwh']);
 
 module.exports = (db) => {
   // GET /api/settings — returns all settings as { key: value, ... }
@@ -32,6 +32,12 @@ module.exports = (db) => {
 
     if (key === 'farm_name' && String(value).trim().length > 40) {
       return res.status(400).json({ error: 'farm_name must be 40 characters or fewer' });
+    }
+    if (key === 'electricity_price_kwh') {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n < 0 || n > 100) {
+        return res.status(400).json({ error: 'electricity_price_kwh must be between 0 and 100' });
+      }
     }
 
     db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(value));

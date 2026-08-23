@@ -26,6 +26,7 @@
 const mqtt     = require('mqtt');
 const ftp      = require('basic-ftp');
 const path     = require('path');
+const fs       = require('fs');
 
 // Map of printer.id → { client, latestPrint, connected }
 const connections = new Map();
@@ -235,6 +236,73 @@ function getAmsSlots(printer) {
   return slots;
 }
 
+// Read filenames from the ZIP central directory without extracting the 3MF.
+// This avoids another runtime dependency and is sufficient for finding the
+// plate G-code path that Bambu's project_file command requires.
+function list3mfEntries(filePath) {
+  const data = fs.readFileSync(filePath);
+  const entries = [];
+  for (let offset = 0; offset + 46 <= data.length;) {
+    const signature = data.readUInt32LE(offset);
+    if (signature !== 0x02014b50) { offset += 1; continue; }
+    const nameLength = data.readUInt16LE(offset + 28);
+    const extraLength = data.readUInt16LE(offset + 30);
+    const commentLength = data.readUInt16LE(offset + 32);
+    const nameStart = offset + 46;
+    const nameEnd = nameStart + nameLength;
+    if (nameEnd > data.length) throw new Error('Invalid 3MF ZIP central directory');
+    entries.push(data.toString('utf8', nameStart, nameEnd).replace(/\\/g, '/'));
+    offset = nameEnd + extraLength + commentLength;
+  }
+  return entries;
+}
+
+function resolvePlateGcode(filePath, displayName = '') {
+  const plates = list3mfEntries(filePath)
+    .filter(name => /^Metadata\/plate_\d+\.gcode$/i.test(name));
+  if (plates.length === 0) {
+    throw new Error('3MF contains no Metadata/plate_N.gcode entry');
+  }
+  if (plates.length === 1) return plates[0];
+
+  // Multi-plate 3MF: prefer an explicit plate number in the uploaded filename.
+  const match = String(displayName).match(/(?:^|[_-])plate[_-]?(\d+)(?:\.|[_-]|$)/i);
+  if (match) {
+    const wanted = plates.find(name => name.toLowerCase() === `metadata/plate_${match[1]}.gcode`);
+    if (wanted) return wanted;
+  }
+  throw new Error(
+    `3MF contains multiple printable plates (${plates.join(', ')}) but the filename does not identify which plate to start`
+  );
+}
+
+function publishAsync(client, topic, payload) {
+  return new Promise((resolve, reject) => {
+    client.publish(topic, payload, err => err ? reject(err) : resolve());
+  });
+}
+
+function waitForPrintStart(conn, sequenceId, timeoutMs = 45000) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const check = () => {
+      const state = conn.latestPrint?.gcode_state;
+      if (state === 'PREPARE' || state === 'RUNNING') return resolve();
+
+      const responseMatches = String(conn.latestPrint?.sequence_id ?? '') === sequenceId &&
+        conn.latestPrint?.command === 'project_file';
+      if (responseMatches && conn.latestPrint?.result && conn.latestPrint.result !== 'success') {
+        return reject(new Error(`Bambu rejected project_file command: ${conn.latestPrint.result}`));
+      }
+      if (Date.now() - started >= timeoutMs) {
+        return reject(new Error(`Bambu did not enter PREPARE or RUNNING within ${Math.round(timeoutMs / 1000)}s`));
+      }
+      setTimeout(check, 500);
+    };
+    check();
+  });
+}
+
 // Uploads the G-code file to the printer via FTPS, then triggers printing via MQTT.
 // gcodeFullPath must be a resolved absolute path that already exists on disk.
 // options.amsSlot: -1 = external spool, 0–N = AMS slot, null = default (external)
@@ -257,6 +325,9 @@ async function uploadAndPrint(printer, gcodeFullPath, _filename, options = {}) {
       `Export from Bambu Studio or Orca Slicer instead of uploading a plain .gcode.`
     );
   }
+
+  const plateGcode = resolvePlateGcode(gcodeFullPath, _filename || onPrinterFilename);
+  console.log(`[bambu] Selected printable plate path: ${plateGcode}`);
 
   // ── FTPS upload ──────────────────────────────────────────────────────────
   // .3mf files go to the SD card root.
@@ -295,10 +366,11 @@ async function uploadAndPrint(printer, gcodeFullPath, _filename, options = {}) {
   // Ref: https://github.com/Doridian/OpenBambuAPI (issue #38 + mqtt.md)
   const subtaskName = path.basename(onPrinterFilename, '.3mf');
   const useAms      = amsSlot != null && amsSlot >= 0;
+  const sequenceId = String(Date.now());
   const printPayload = {
-    sequence_id:     '0',
+    sequence_id:     sequenceId,
     command:         'project_file',
-    param:           'Metadata/plate_1.gcode',
+    param:           plateGcode,
     subtask_name:    subtaskName,
     url:             `ftp:///${onPrinterFilename}`,
     bed_type:        'auto',
@@ -317,10 +389,10 @@ async function uploadAndPrint(printer, gcodeFullPath, _filename, options = {}) {
 
   const mqttPayload = JSON.stringify({ print: printPayload });
   console.log(`[bambu] MQTT payload → ${printer.name}: ${mqttPayload}`);
-  conn.client.publish(`device/${printer.serial_number}/request`, mqttPayload, (err) => {
-    if (err) console.error(`[bambu] MQTT publish failed for ${printer.name}:`, err.message);
-    else console.log(`[bambu] MQTT publish confirmed for ${printer.name}`);
-  });
+  await publishAsync(conn.client, `device/${printer.serial_number}/request`, mqttPayload);
+  console.log(`[bambu] MQTT publish confirmed for ${printer.name} — waiting for printer start`);
+  await waitForPrintStart(conn, sequenceId);
+  console.log(`[bambu] ${printer.name} confirmed PREPARE/RUNNING`);
 }
 
 // ─── File cleanup ─────────────────────────────────────────────────────────────
@@ -382,4 +454,4 @@ async function checkIfPrinting(printer) {
   return status === 'PRINTING' || status === 'PAUSED';
 }
 
-module.exports = { getStatus, uploadAndPrint, cancelJob, checkIfPrinting, getAmsSlots, deleteFile };
+module.exports = { getStatus, uploadAndPrint, cancelJob, checkIfPrinting, getAmsSlots, deleteFile, resolvePlateGcode };
