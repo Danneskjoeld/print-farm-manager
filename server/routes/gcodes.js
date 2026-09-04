@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { extract3mfMetadata } = require('../lib/three-mf-metadata');
 const router = express.Router();
 
 const GCODE_DIR = path.join(__dirname, '..', 'gcode');
@@ -93,6 +94,27 @@ function normalizeMaterialGrams(raw) {
 // scheduler is optional, only needed at runtime for sweepIdlePrinters after an upload
 // makes a part schedulable. Tests pass null so there is no live scheduler dependency.
 module.exports = (db, scheduler = null) => {
+  // Repair older Bambu uploads that predate embedded 3MF metadata extraction.
+  const missingMetadata = db.prepare(`
+    SELECT id, filepath, est_print_secs, material_grams FROM gcodes
+    WHERE lower(filename) LIKE '%.3mf' AND (est_print_secs IS NULL OR material_grams IS NULL)
+  `).all();
+  const updateMetadata = db.prepare(`
+    UPDATE gcodes SET est_print_secs = COALESCE(est_print_secs, ?),
+                      material_grams = COALESCE(material_grams, ?)
+    WHERE id = ?
+  `);
+  for (const gcode of missingMetadata) {
+    try {
+      const fullPath = path.join(GCODE_DIR, path.basename(gcode.filepath));
+      if (!fs.existsSync(fullPath)) continue;
+      const metadata = extract3mfMetadata(fullPath);
+      updateMetadata.run(metadata.est_print_secs, metadata.material_grams, gcode.id);
+    } catch (err) {
+      console.warn(`[gcodes] Could not read metadata from ${gcode.filepath}: ${err.message}`);
+    }
+  }
+
   // GET /api/gcodes — list, optionally filtered by part_id
   router.get('/', (req, res) => {
     const { part_id } = req.query;
@@ -151,7 +173,13 @@ module.exports = (db, scheduler = null) => {
     // ams_slot: -1 = external spool, 0–N = AMS slot, null = not applicable (non-Bambu)
     const parsedAmsSlot = ams_slot !== undefined && ams_slot !== '' ? parseInt(ams_slot, 10) : null;
 
-    const parsedMaterialGrams = material_grams ? parseFloat(material_grams) : null;
+    let embeddedMetadata = {};
+    if (/\.3mf$/i.test(req.file.originalname)) {
+      try { embeddedMetadata = extract3mfMetadata(req.file.path); }
+      catch (err) { console.warn(`[gcodes] Could not read uploaded 3MF metadata: ${err.message}`); }
+    }
+    const parsedMaterialGrams = material_grams ? parseFloat(material_grams) : (embeddedMetadata.material_grams ?? null);
+    const parsedPrintSecs = est_print_secs ? parseInt(est_print_secs, 10) : (embeddedMetadata.est_print_secs ?? null);
     // allowed_groups: JSON array string e.g. '["MK4S Farm","XL Farm"]', or null = all groups
     const parsedAllowedGroups = allowed_groups && allowed_groups !== '' ? allowed_groups : null;
     const parsedRequiredMaterial = required_material && required_material !== '' ? required_material.trim() : null;
@@ -166,7 +194,7 @@ module.exports = (db, scheduler = null) => {
       req.file.originalname,
       req.file.filename,
       parseInt(parts_per_plate, 10),
-      est_print_secs ? parseInt(est_print_secs, 10) : null,
+      parsedPrintSecs,
       parsedMaterialGrams,
       parsedAmsSlot,
       parsedAllowedGroups,
@@ -183,6 +211,27 @@ module.exports = (db, scheduler = null) => {
     if (scheduler) scheduler.sweepIdlePrinters();
 
     res.status(201).json(db.prepare('SELECT * FROM gcodes WHERE id = ?').get(gcode.lastInsertRowid));
+  });
+
+  // POST /api/gcodes/:id/extract-metadata — explicitly refresh values embedded in a Bambu 3MF.
+  router.post('/:id/extract-metadata', (req, res) => {
+    const gcode = db.prepare('SELECT * FROM gcodes WHERE id = ?').get(req.params.id);
+    if (!gcode) return res.status(404).json({ error: 'G-code not found' });
+    if (!/\.3mf$/i.test(gcode.filename)) return res.status(400).json({ error: 'Embedded metadata is only available for 3MF files.' });
+    try {
+      const fullPath = path.join(GCODE_DIR, path.basename(gcode.filepath));
+      if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'G-code file is missing.' });
+      const metadata = extract3mfMetadata(fullPath);
+      if (!metadata.est_print_secs && !metadata.material_grams) {
+        return res.status(422).json({ error: 'No print duration or material weight found in the 3MF file.' });
+      }
+      db.prepare(`UPDATE gcodes SET est_print_secs = COALESCE(?, est_print_secs),
+                  material_grams = COALESCE(?, material_grams) WHERE id = ?`)
+        .run(metadata.est_print_secs, metadata.material_grams, gcode.id);
+      res.json(db.prepare('SELECT * FROM gcodes WHERE id = ?').get(gcode.id));
+    } catch (err) {
+      res.status(422).json({ error: `Cannot read 3MF metadata: ${err.message}` });
+    }
   });
 
   // PUT /api/gcodes/:id — update est_print_secs and/or material_grams

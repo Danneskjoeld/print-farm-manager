@@ -33,6 +33,7 @@ const printerJobsRouter  = require('./routes/printer-jobs')(db);
 const inventoryRouter    = require('./routes/inventory')(db);
 const maintenanceRouter  = require('./routes/maintenance')(db);
 const costsRouter        = require('./routes/costs')(db);
+const planningRouter     = require('./routes/planning')(db);
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -53,6 +54,7 @@ app.use('/api/filaments',       filamentsRouter);
 app.use('/api/inventory',       inventoryRouter);
 app.use('/api/maintenance',     maintenanceRouter);
 app.use('/api/costs',           costsRouter);
+app.use('/api/planning',        planningRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {

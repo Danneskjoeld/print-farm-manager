@@ -14,6 +14,7 @@ beforeAll(() => {
       name TEXT NOT NULL,
       status TEXT DEFAULT 'draft',
       priority INTEGER DEFAULT 0,
+      sale_price REAL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -59,7 +60,11 @@ beforeAll(() => {
       status TEXT DEFAULT 'queued',
       started_at INTEGER,
       finished_at INTEGER,
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      material_cost REAL DEFAULT 0,
+      machine_cost REAL DEFAULT 0,
+      energy_cost REAL DEFAULT 0,
+      maintenance_cost REAL DEFAULT 0
     );
     CREATE TABLE printer_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,6 +72,13 @@ beforeAll(() => {
       event_type TEXT NOT NULL,
       note TEXT,
       created_at INTEGER NOT NULL
+    );
+    CREATE TABLE maintenance_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, performed_at INTEGER NOT NULL, cost REAL DEFAULT 0
+    );
+    CREATE TABLE project_costs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, category TEXT,
+      amount REAL, note TEXT, incurred_at INTEGER, created_at INTEGER
     );
   `);
 

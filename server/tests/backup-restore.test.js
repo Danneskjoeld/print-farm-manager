@@ -61,7 +61,8 @@ beforeEach(() => {
       updated_at        INTEGER NOT NULL,
       required_material TEXT,
       required_color    TEXT,
-      allowed_groups    TEXT
+      allowed_groups    TEXT,
+      sale_price        REAL NOT NULL DEFAULT 0
     );
     CREATE TABLE parts (
       id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,6 +131,12 @@ beforeEach(() => {
       UNIQUE(type_id, name)
     );
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE project_costs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      category TEXT NOT NULL DEFAULT 'other', amount REAL NOT NULL,
+      note TEXT, incurred_at INTEGER NOT NULL, created_at INTEGER NOT NULL
+    );
   `);
 
   const now = Date.now();
@@ -144,8 +151,8 @@ beforeEach(() => {
   `).run(now);
 
   db.prepare(`
-    INSERT INTO projects (name, description, status, priority, created_at, updated_at, required_material, required_color, allowed_groups)
-    VALUES ('Targeted Project', 'test', 'active', 0, ?, ?, 'PETG', 'Red', '["Bambu Farm"]')
+    INSERT INTO projects (name, description, status, priority, created_at, updated_at, required_material, required_color, allowed_groups, sale_price)
+    VALUES ('Targeted Project', 'test', 'active', 0, ?, ?, 'PETG', 'Red', '["Bambu Farm"]', 1234.56)
   `).run(now, now);
 
   db.prepare(`
@@ -203,6 +210,7 @@ describe('Backup export/restore — column round-trip regression', () => {
       required_material: 'PETG',
       required_color: 'Red',
       allowed_groups: '["Bambu Farm"]',
+      sale_price: 1234.56,
     });
     expect(res.body.parts[0]).toMatchObject({
       print_time_seconds: 7350,
@@ -226,7 +234,7 @@ describe('Backup export/restore — column round-trip regression', () => {
       // Wipe the columns under test so a false-positive (restore is a no-op / DB untouched)
       // can't slip through — restore must be what puts these values back.
       db.prepare("UPDATE printers SET serial_number = '', loaded_material = NULL, loaded_color = NULL").run();
-      db.prepare("UPDATE projects SET required_material = NULL, required_color = NULL, allowed_groups = NULL").run();
+      db.prepare("UPDATE projects SET required_material = NULL, required_color = NULL, allowed_groups = NULL, sale_price = 0").run();
       db.prepare("UPDATE parts SET print_time_seconds = NULL, material_grams = NULL").run();
       db.prepare("UPDATE gcodes SET ams_slot = NULL, material_grams = NULL, allowed_groups = NULL, required_material = NULL, required_color = NULL").run();
 
@@ -246,6 +254,7 @@ describe('Backup export/restore — column round-trip regression', () => {
       expect(project.required_material).toBe('PETG');
       expect(project.required_color).toBe('Red');
       expect(project.allowed_groups).toBe('["Bambu Farm"]');
+      expect(project.sale_price).toBe(1234.56);
 
       const part = db.prepare('SELECT * FROM parts WHERE id = 1').get();
       expect(part.print_time_seconds).toBe(7350);

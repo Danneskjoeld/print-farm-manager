@@ -179,6 +179,18 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_maintenance_printer ON maintenance_records(printer_id, performed_at DESC);
 
+  CREATE TABLE IF NOT EXISTS project_costs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    category TEXT NOT NULL DEFAULT 'other',
+    amount REAL NOT NULL,
+    note TEXT,
+    incurred_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_project_costs_project
+    ON project_costs(project_id, incurred_at DESC);
+
   CREATE TABLE IF NOT EXISTS maintenance_model_plans (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     model_id TEXT NOT NULL,

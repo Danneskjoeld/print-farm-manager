@@ -16,4 +16,6 @@ Each printer has an hourly machine rate and average power draw. Electricity pric
 
 The Costs page aggregates finished jobs by project. Maintenance expenses are shown separately so they remain traceable to their service record.
 
+Historical or otherwise untracked production expenses can be entered on the Costs page as manual project costs. Each entry records a category, amount, date and optional note. Entries are auditable individually, included in project and farm profit, and preserved by JSON backup and restore.
+
 All new records are included in version 2 JSON backups. Version 1 backups remain restorable with defaults for the new fields.

@@ -333,6 +333,20 @@ async function uploadAndPrint(printer, gcodeFullPath, _filename, options = {}) {
   // .3mf files go to the SD card root.
   console.log(`[bambu] Uploading ${onPrinterFilename} to ${printer.name} via FTPS…`);
 
+  // Node 22.23.1/22.23.2 ignore the TLS session supplied while basic-ftp wraps
+  // its passive data socket. Bambu's vsftpd requires that session reuse and
+  // rejects LIST/STOR with FTP 522. Fail with the real cause instead of an
+  // unexplained, permanently "Uploading" job.
+  const [nodeMajor, nodeMinor, nodePatch] = process.versions.node.split('.').map(Number);
+  if (nodeMajor === 22 && nodeMinor === 23 && nodePatch <= 2) {
+    const err = new Error(
+      `Node.js ${process.versions.node} cannot upload to current Bambu firmware because of a TLS session-reuse regression. ` +
+      `Use Node.js 22.22.0 or a later Node release containing the upstream fix.`
+    );
+    err.code = 'BAMBU_NODE_TLS_REGRESSION';
+    throw err;
+  }
+
   const ftpClient = new ftp.Client();
   ftpClient.ftp.verbose = !!process.env.DEBUG_BAMBU;
 

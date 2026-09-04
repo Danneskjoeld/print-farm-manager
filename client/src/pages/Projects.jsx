@@ -448,16 +448,20 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
     setSelectedGroups(prev => prev.includes(g) ? prev.filter(x => x !== g) : [...prev, g]);
   }
 
-  async function parseFromFilename() {
+  async function parseMetadata() {
     setParsing(true);
     setError(null);
     try {
-      const res = await fetch('/api/gcodes/parse-filename', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: gc.filename }),
-      });
+      const is3mf = /\.3mf$/i.test(gc.filename);
+      const res = is3mf
+        ? await fetch(`/api/gcodes/${gc.id}/extract-metadata`, { method: 'POST' })
+        : await fetch('/api/gcodes/parse-filename', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: gc.filename }),
+          });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Metadata could not be read.');
       if (data.est_print_secs != null) setTimeDraft(formatDurationForInput(data.est_print_secs));
       if (data.material_grams != null) setMaterialDraft(formatMaterialForInput(data.material_grams));
       if (data.est_print_secs == null && data.material_grams == null) {
@@ -537,9 +541,9 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
           style={{ ...inputSx, width: 110, fontSize: 12 }}
         />
         <button
-          onClick={parseFromFilename}
+          onClick={parseMetadata}
           disabled={parsing}
-          title="Re-read print time and material weight from the filename (e.g. …_2h30m_45g.gcode)"
+          title={/\.3mf$/i.test(gc.filename) ? 'Read print time and material weight from the 3MF file' : 'Re-read print time and material weight from the filename'}
           style={{
             background: '#1f2937', color: '#94a3b8',
             border: '1px solid #2d3748', borderRadius: 4,
@@ -547,7 +551,7 @@ function GcodeEstimateRow({ gc, onDelete, onSaved, filamentTypes, filamentColors
             opacity: parsing ? 0.7 : 1, flexShrink: 0,
           }}
         >
-          {parsing ? 'Parsing…' : 'Parse filename'}
+          {parsing ? 'Reading…' : (/\.3mf$/i.test(gc.filename) ? 'Read 3MF data' : 'Parse filename')}
         </button>
         <button
           onClick={save}

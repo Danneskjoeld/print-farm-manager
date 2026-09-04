@@ -16,9 +16,14 @@ beforeEach(() => {
       material_cost REAL, machine_cost REAL, energy_cost REAL, maintenance_cost REAL
     );
     CREATE TABLE maintenance_records (id INTEGER PRIMARY KEY, performed_at INTEGER, cost REAL);
+    CREATE TABLE project_costs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, category TEXT,
+      amount REAL, note TEXT, incurred_at INTEGER, created_at INTEGER
+    );
     INSERT INTO printers VALUES (1,'P1S-01');
   `);
   app = express();
+  app.use(express.json());
   app.use('/api/costs', require('../routes/costs')(db));
 });
 afterEach(() => db.close());
@@ -45,4 +50,25 @@ test('only completed projects generate revenue and profit', async () => {
   expect(response.body.projects.find(p=>p.id===2)).toMatchObject({
     sale_price:800, revenue:0, production_cost:120, profit:-120,
   });
+});
+
+test('manual project costs are stored and included in project profit', async () => {
+  seedProject(1, 'completed', 1000, [100,200,50,0]);
+  const create = await request(app).post('/api/costs/projects/1/manual').send({
+    category:'other', amount:125.50, note:'Historical production', incurred_at:Date.now(),
+  });
+  expect(create.status).toBe(201);
+
+  const response = await request(app).get('/api/costs');
+  expect(response.body.totals).toMatchObject({ manual:125.5, total:475.5, profit:524.5 });
+  expect(response.body.projects[0]).toMatchObject({ manual_cost:125.5, production_cost:475.5, profit:524.5 });
+  expect(response.body.manual_costs[0]).toMatchObject({ project_id:1, category:'other', amount:125.5, note:'Historical production' });
+});
+
+test('manual project costs reject invalid amounts and can be deleted', async () => {
+  db.prepare('INSERT INTO projects VALUES (1,?,?,?,?)').run('Project 1','completed',100,Date.now());
+  expect((await request(app).post('/api/costs/projects/1/manual').send({ amount:0 })).status).toBe(400);
+  const create = await request(app).post('/api/costs/projects/1/manual').send({ amount:10 });
+  expect((await request(app).delete(`/api/costs/manual/${create.body.id}`)).status).toBe(200);
+  expect(db.prepare('SELECT COUNT(*) count FROM project_costs').get().count).toBe(0);
 });

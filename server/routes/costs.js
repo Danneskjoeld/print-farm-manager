@@ -2,6 +2,32 @@ const express = require('express');
 
 module.exports = (db) => {
   const router = express.Router();
+  const categories = new Set(['material', 'machine', 'energy', 'maintenance', 'other']);
+
+  router.post('/projects/:projectId/manual', (req, res) => {
+    const project = db.prepare('SELECT id FROM projects WHERE id=?').get(req.params.projectId);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const amount = Number(req.body?.amount);
+    const category = String(req.body?.category || 'other').toLowerCase();
+    const incurredAt = req.body?.incurred_at == null ? Date.now() : Number(req.body.incurred_at);
+    if (!Number.isFinite(amount) || amount <= 0)
+      return res.status(400).json({ error: 'amount must be greater than zero' });
+    if (!categories.has(category))
+      return res.status(400).json({ error: 'invalid category' });
+    if (!Number.isFinite(incurredAt) || incurredAt <= 0)
+      return res.status(400).json({ error: 'invalid incurred_at' });
+    const info = db.prepare(`INSERT INTO project_costs
+      (project_id,category,amount,note,incurred_at,created_at) VALUES (?,?,?,?,?,?)`)
+      .run(project.id, category, amount, req.body?.note?.trim() || null, incurredAt, Date.now());
+    res.status(201).json(db.prepare('SELECT * FROM project_costs WHERE id=?').get(info.lastInsertRowid));
+  });
+
+  router.delete('/manual/:id', (req, res) => {
+    const result = db.prepare('DELETE FROM project_costs WHERE id=?').run(req.params.id);
+    if (!result.changes) return res.status(404).json({ error: 'Manual project cost not found' });
+    res.json({ ok: true });
+  });
+
   router.get('/', (req, res) => {
     const from = Number(req.query.from) || 0;
     const to = Number(req.query.to) || Date.now();
@@ -26,17 +52,26 @@ module.exports = (db) => {
         COALESCE(SUM(j.material_cost),0) material_cost,
         COALESCE(SUM(j.machine_cost),0) machine_cost,
         COALESCE(SUM(j.energy_cost),0) energy_cost,
-        COALESCE(SUM(j.maintenance_cost),0) maintenance_cost
+        COALESCE(SUM(j.maintenance_cost),0) maintenance_cost,
+        COALESCE((SELECT SUM(pc.amount) FROM project_costs pc
+          WHERE pc.project_id=pr.id AND pc.incurred_at BETWEEN ? AND ?),0) manual_cost
       FROM projects pr
       LEFT JOIN parts pa ON pa.project_id=pr.id
       LEFT JOIN jobs j ON j.part_id=pa.id AND j.status IN ('finished','failed')
         AND j.finished_at BETWEEN ? AND ?
       GROUP BY pr.id ORDER BY pr.name
-    `).all(from, to).map(project => {
+    `).all(from, to, from, to).map(project => {
       const production_cost = project.material_cost + project.machine_cost +
-        project.energy_cost + project.maintenance_cost;
+        project.energy_cost + project.maintenance_cost + project.manual_cost;
       return { ...project, production_cost, profit: project.revenue - production_cost };
     });
+
+    const manualCosts = db.prepare(`
+      SELECT pc.*, pr.name project_name FROM project_costs pc
+      JOIN projects pr ON pr.id=pc.project_id
+      WHERE pc.incurred_at BETWEEN ? AND ?
+      ORDER BY pc.incurred_at DESC, pc.id DESC
+    `).all(from, to);
 
     const generalMaintenance = Number(db.prepare(`
       SELECT COALESCE(SUM(cost),0) total FROM maintenance_records
@@ -51,14 +86,17 @@ module.exports = (db) => {
       return total;
     }, { material:0, machine:0, energy:0, job_maintenance:0, production:0 });
     const revenue = projects.reduce((sum, project) => sum + Number(project.revenue || 0), 0);
-    const totalCost = jobTotals.production + generalMaintenance;
+    const manualTotal = manualCosts.reduce((sum, cost) => sum + Number(cost.amount || 0), 0);
+    const totalCost = jobTotals.production + generalMaintenance + manualTotal;
 
     res.json({
       jobs,
       projects,
+      manual_costs: manualCosts,
       maintenance_cost: generalMaintenance,
       totals: {
         ...jobTotals,
+        manual: manualTotal,
         total: totalCost,
         revenue,
         profit: revenue - totalCost,

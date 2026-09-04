@@ -414,6 +414,7 @@ class JobScheduler extends EventEmitter {
           break;
         } catch (err) {
           lastErr = err;
+          if (err.code === 'BAMBU_NODE_TLS_REGRESSION') break;
           if (attempt <= MAX_RETRIES) {
             const isConflict = err.code === 'UPLOAD_CONFLICT';
             const waitMs = isConflict ? 60000 : 5000;
@@ -430,6 +431,12 @@ class JobScheduler extends EventEmitter {
     }
 
     if (lastErr) {
+      if (lastErr.code === 'BAMBU_NODE_TLS_REGRESSION') {
+        this.db.prepare(`UPDATE jobs SET status = 'failed', finished_at = ? WHERE id = ?`).run(Date.now(), jobId);
+        notifications.add(`${printer.name}: ${lastErr.message}`);
+        console.error(`[scheduler] ${printer.name} upload not attempted: ${lastErr.message}`);
+        return null;
+      }
       // Before giving up, check whether the printer is actually printing.
       // This handles the case where our request timed out but the printer
       // received the file and started the job anyway. If it is printing, treat
@@ -448,7 +455,7 @@ class JobScheduler extends EventEmitter {
       // Never auto-fail here — the operator decides.
       this.db.prepare('UPDATE printers SET is_held = 1 WHERE id = ?').run(printer.id);
       notifications.add(
-        `Upload to ${printer.name} failed after ${MAX_RETRIES + 1} attempts — check the printer and confirm the outcome in Fleet.`
+        `Upload to ${printer.name} failed after ${MAX_RETRIES + 1} attempts: ${lastErr.message} Check the printer and confirm the outcome in Fleet.`
       );
       console.error(`[scheduler] ${printer.name} upload failed after ${MAX_RETRIES + 1} attempts — held, job ${jobId} left as uploading for operator confirmation`);
       return null;

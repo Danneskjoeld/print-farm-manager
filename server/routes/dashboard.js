@@ -121,7 +121,8 @@ module.exports = (db) => {
         COALESCE(SUM(CASE WHEN j.status IN ('finished','done','failed')
           THEN COALESCE(j.material_cost,0)+COALESCE(j.machine_cost,0)+
                COALESCE(j.energy_cost,0)+COALESCE(j.maintenance_cost,0)
-          ELSE 0 END),0) production_cost
+          ELSE 0 END),0) + COALESCE((SELECT SUM(pc.amount) FROM project_costs pc
+            WHERE pc.project_id=pr.id),0) production_cost
       FROM projects pr
       LEFT JOIN parts pa ON pa.project_id=pr.id
       LEFT JOIN jobs j ON j.part_id=pa.id

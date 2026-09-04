@@ -40,6 +40,7 @@ module.exports = (db) => {
     const filament_transactions = db.prepare('SELECT * FROM filament_transactions').all();
     const maintenance_plans = db.prepare('SELECT * FROM maintenance_plans').all();
     const maintenance_records = db.prepare('SELECT * FROM maintenance_records').all();
+    const project_costs = db.prepare('SELECT * FROM project_costs').all();
     const settings = db.prepare('SELECT * FROM settings').all();
 
     // Embed gcode files as base64, keyed by their on-disk basename
@@ -62,7 +63,7 @@ module.exports = (db) => {
       printer_events,
       filament_types, filament_colors, filament_rolls,
       printer_filament_slots, filament_transactions,
-      maintenance_plans, maintenance_records, settings,
+      maintenance_plans, maintenance_records, project_costs, settings,
       gcode_files: gcodeFiles,
     };
 
@@ -101,6 +102,7 @@ module.exports = (db) => {
         db.prepare('DELETE FROM filament_transactions').run();
         db.prepare('DELETE FROM printer_filament_slots').run();
         db.prepare('DELETE FROM maintenance_records').run();
+        db.prepare('DELETE FROM project_costs').run();
         db.prepare('DELETE FROM maintenance_plans').run();
         db.prepare('DELETE FROM filament_rolls').run();
         // Version 1 backups did not contain the Filament Library. Preserve the
@@ -133,8 +135,8 @@ module.exports = (db) => {
                @loaded_material, @loaded_color, @hourly_cost, @power_watts)
           `),
           project: db.prepare(`
-            INSERT INTO projects (id, name, description, status, priority, created_at, updated_at, required_material, required_color)
-            VALUES (@id, @name, @description, @status, @priority, @created_at, @updated_at, @required_material, @required_color)
+            INSERT INTO projects (id, name, description, status, priority, sale_price, created_at, updated_at, required_material, required_color)
+            VALUES (@id, @name, @description, @status, @priority, @sale_price, @created_at, @updated_at, @required_material, @required_color)
           `),
           part: db.prepare(`
             INSERT INTO parts
@@ -161,7 +163,7 @@ module.exports = (db) => {
         };
 
         for (const p of (backup.printers || [])) stmts.printer.run({serial_number:'',loaded_material:null,loaded_color:null,hourly_cost:0,power_watts:0,...p});
-        for (const p of (backup.projects || [])) stmts.project.run({required_material:null,required_color:null,...p});
+        for (const p of (backup.projects || [])) stmts.project.run({sale_price:0,required_material:null,required_color:null,...p});
         for (const p of (backup.parts    || [])) stmts.part.run(p);
         for (const g of (backup.gcodes   || [])) {
           // filepath stores just the filename — no path rewriting needed
@@ -187,6 +189,7 @@ module.exports = (db) => {
         insertRows('filament_transactions', backup.filament_transactions);
         insertRows('maintenance_plans', backup.maintenance_plans);
         insertRows('maintenance_records', backup.maintenance_records);
+        insertRows('project_costs', backup.project_costs);
         if (Array.isArray(backup.settings)) {
           for (const s of backup.settings) db.prepare('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)').run(s.key,s.value);
         }
@@ -199,6 +202,7 @@ module.exports = (db) => {
           ['filament_rolls', 'filament_rolls'], ['filament_transactions', 'filament_transactions'],
           ['filament_types', 'filament_types'], ['filament_colors', 'filament_colors'],
           ['maintenance_plans', 'maintenance_plans'], ['maintenance_records', 'maintenance_records'],
+          ['project_costs', 'project_costs'],
         ]) {
           db.prepare(`
             INSERT OR REPLACE INTO sqlite_sequence (name, seq)
