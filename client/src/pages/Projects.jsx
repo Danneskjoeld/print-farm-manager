@@ -890,6 +890,8 @@ export default function Projects() {
   const [newName, setNewName]             = useState('');
   const [newDesc, setNewDesc]             = useState('');
   const [newPrice, setNewPrice]           = useState('');
+  const [newCustomer, setNewCustomer] = useState('');
+  const [newTechnology, setNewTechnology] = useState('');
 
   // Add part form
   const [newPartName, setNewPartName]     = useState('');
@@ -998,10 +1000,10 @@ export default function Projects() {
     const res = await fetch('/api/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newName.trim(), description: newDesc.trim() || undefined, sale_price:Number(newPrice || 0) }),
+      body: JSON.stringify({ name: newName.trim(), technology: newTechnology || null, customer_name: newCustomer.trim(), description: newDesc.trim() || undefined, sale_price:Number(newPrice || 0) }),
     });
     if (res.ok) {
-      setNewName(''); setNewDesc(''); setNewPrice(''); setShowNewForm(false);
+      setNewName(''); setNewDesc(''); setNewPrice(''); setNewCustomer(''); setNewTechnology(''); setShowNewForm(false);
       await fetchProjects();
       showToast('Project created');
     }
@@ -1216,6 +1218,31 @@ export default function Projects() {
     showToast('Project price saved');
   }
 
+  async function saveCustomer(value) {
+    if (value.trim() === (detailProject.customer_name || '')) return;
+    try {
+      const res = await fetch(`/api/projects/${detailProject.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customer_name: value.trim() }),
+      });
+      if (!res.ok) throw new Error('Customer could not be saved');
+      await Promise.all([fetchDetail(detailProject.id), fetchProjects()]);
+      showToast('Customer saved');
+    } catch (err) { showToast(err.message, 'error'); }
+  }
+
+  async function saveTechnology(value) {
+    try {
+      const res = await fetch(`/api/projects/${detailProject.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ technology: value || null }),
+      });
+      if (!res.ok) throw new Error('Technology could not be saved');
+      await Promise.all([fetchDetail(detailProject.id), fetchProjects()]);
+      showToast('Technology saved');
+    } catch (err) { showToast(err.message, 'error'); }
+  }
+
 
   // ─── List view ───────────────────────────────────────────────────────────────
   if (selectedId == null) {
@@ -1317,6 +1344,16 @@ export default function Projects() {
               />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label style={{ color: '#94a3b8', fontSize: 12 }}>Technology</label>
+              <select value={newTechnology} onChange={e => setNewTechnology(e.target.value)} style={inputSx}>
+                <option value="">Not assigned</option><option value="FDM">FDM</option><option value="SLA">SLA</option>
+              </select>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label style={{ color: '#94a3b8', fontSize: 12 }}>Customer</label>
+              <input value={newCustomer} onChange={e => setNewCustomer(e.target.value)} placeholder="Customer name (optional)" style={{ ...inputSx, width: 220 }} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <label style={{ color: '#94a3b8', fontSize: 12 }}>Project price (€)</label>
               <input type="number" min="0" step="0.01" value={newPrice}
                 onChange={e => setNewPrice(e.target.value)} placeholder="0.00"
@@ -1403,6 +1440,8 @@ export default function Projects() {
                     <div style={{ color: '#64748b', fontSize: 12 }}>{p.description}</div>
                   )}
                   <div style={{ color:'#22c55e', fontSize:12, marginTop:3 }}>
+                    {p.customer_name && <span>Customer: {p.customer_name} · </span>}
+                    <span>{p.technology || 'Not assigned'} · </span>
                     Project price: {Number(p.sale_price || 0).toLocaleString(undefined,{style:'currency',currency:'EUR'})}
                   </div>
                 </div>
@@ -1476,6 +1515,18 @@ export default function Projects() {
           </>
         )}
         <StatusDropdown project={detailProject} onTransition={handleStatusTransition} />
+        <label style={{display:'flex',alignItems:'center',gap:6,color:'#94a3b8',fontSize:12}}>
+          Technology
+          <select value={detailProject.technology || ''} onChange={e => saveTechnology(e.target.value)} style={inputSx}>
+            <option value="">Not assigned</option><option value="FDM">FDM</option><option value="SLA">SLA</option>
+          </select>
+        </label>
+        <label style={{display:'flex',alignItems:'center',gap:6,color:'#94a3b8',fontSize:12}}>
+          Customer
+          <input key={`${detailProject.id}-${detailProject.customer_name || ''}`} defaultValue={detailProject.customer_name || ''}
+            placeholder="Customer name (optional)" onBlur={e => saveCustomer(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} style={{...inputSx,width:200}} />
+        </label>
         <label style={{display:'flex',alignItems:'center',gap:6,color:'#64748b',fontSize:12,marginLeft:'auto'}}>
           Project price
           <input type="number" min="0" step="0.01" defaultValue={Number(detailProject.sale_price || 0)}

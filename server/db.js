@@ -108,6 +108,8 @@ try { db.exec('ALTER TABLE gcodes ADD COLUMN required_color TEXT'); } catch (_) 
 try { db.exec('ALTER TABLE projects ADD COLUMN required_material TEXT'); } catch (_) {}
 try { db.exec('ALTER TABLE projects ADD COLUMN required_color TEXT'); } catch (_) {}
 try { db.exec('ALTER TABLE projects ADD COLUMN sale_price REAL NOT NULL DEFAULT 0'); } catch (_) {}
+try { db.exec('ALTER TABLE projects ADD COLUMN customer_name TEXT'); } catch (_) {}
+try { db.exec("ALTER TABLE projects ADD COLUMN technology TEXT CHECK (technology IN ('FDM','SLA'))"); } catch (_) {}
 try { db.exec('ALTER TABLE printers ADD COLUMN hourly_cost REAL DEFAULT 0'); } catch (_) {}
 try { db.exec('ALTER TABLE printers ADD COLUMN power_watts REAL DEFAULT 0'); } catch (_) {}
 try { db.exec('ALTER TABLE jobs ADD COLUMN material_cost REAL DEFAULT 0'); } catch (_) {}

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import PollTimer from '../components/PollTimer';
+import { Link } from 'react-router-dom';
 
 const POLL_INTERVAL_MS = 15000;
 
@@ -163,6 +164,8 @@ export default function Dashboard() {
   }
 
   const { stats, printers, active_projects, recent_activity, financials } = data;
+  const latestProjects = [...(financials?.projects || [])].sort((a,b) => Number(b.created_at)-Number(a.created_at) || b.id-a.id).slice(0,5);
+  const visibleActiveProjects = active_projects.filter(p => latestProjects.some(latest => latest.id === p.id));
 
   // Group printers by model for the fleet grid
   const modelOrder = allModels.map(m => m.model_id);
@@ -290,11 +293,12 @@ export default function Dashboard() {
         </div>
 
         <div style={{background:'#111827',borderRadius:10,padding:'16px 20px',overflowX:'auto'}}>
-          <div style={{fontSize:11,color:'#64748b',textTransform:'uppercase',letterSpacing:'0.15em',fontWeight:700,marginBottom:10}}>Project Profitability</div>
+          <div style={{fontSize:11,color:'#64748b',textTransform:'uppercase',letterSpacing:'0.15em',fontWeight:700,marginBottom:10}}>Latest 5 Projects</div>
+          <Link to="/profit" style={{display:'inline-block',color:'#60a5fa',marginBottom:12}}>View all projects and technology analysis →</Link>
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}><thead><tr>
-            {['Project','Status','Price','Revenue','Cost','Profit'].map(h=><th key={h} style={{textAlign:'left',padding:'6px 8px',color:'#475569'}}>{h}</th>)}
-          </tr></thead><tbody>{(financials?.projects||[]).map(p=><tr key={p.id} style={{borderTop:'1px solid #1e293b'}}>
-            <td style={{padding:'7px 8px',fontWeight:600}}>{p.name}</td><td>{p.status}</td><td>{formatMoney(p.sale_price)}</td>
+            {['Project','Customer','Technology','Status','Price','Revenue','Cost','Profit'].map(h=><th key={h} style={{textAlign:'left',padding:'6px 8px',color:'#475569'}}>{h}</th>)}
+          </tr></thead><tbody>{latestProjects.map(p=><tr key={p.id} style={{borderTop:'1px solid #1e293b'}}>
+            <td style={{padding:'7px 8px',fontWeight:600}}>{p.name}</td><td style={{padding:'7px 8px',color:'#94a3b8'}}>{p.customer_name || '—'}</td><td>{p.technology || 'Not assigned'}</td><td>{p.status}</td><td>{formatMoney(p.sale_price)}</td>
             <td>{formatMoney(p.revenue)}</td><td>{formatMoney(p.production_cost)}</td>
             <td style={{color:p.profit>=0?'#22c55e':'#ef4444',fontWeight:700}}>{formatMoney(p.profit)}</td>
           </tr>)}</tbody></table>
@@ -376,16 +380,16 @@ export default function Dashboard() {
             textTransform: 'uppercase', letterSpacing: '0.15em', fontWeight: 700,
             marginBottom: 14,
           }}>
-            Active Projects
+            Active Projects — latest 5 projects
           </div>
 
-          {active_projects.length === 0 ? (
+          {visibleActiveProjects.length === 0 ? (
             <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>
-              No active projects. Create one on the Projects page and set it Active to track production here.
+              None of the latest five projects is active. See Projects for all production work.
             </p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {active_projects.map(proj => {
+              {visibleActiveProjects.map(proj => {
                 const hasStats = (proj.elapsed_secs > 0) || (proj.material_used_grams > 0);
 
                 return (
@@ -394,6 +398,7 @@ export default function Dashboard() {
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                       <span style={{ fontWeight: 700, fontSize: 14 }}>{proj.name}</span>
+                      {proj.customer_name && <span style={{fontSize:12,color:'#94a3b8'}}>Customer: {proj.customer_name}</span>}
                       <span style={{
                         background: '#166534', color: '#4ade80',
                         borderRadius: 3, padding: '1px 7px',

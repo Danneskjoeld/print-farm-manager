@@ -12,6 +12,7 @@ import Inventory from './pages/Inventory';
 import Maintenance from './pages/Maintenance';
 import Costs from './pages/Costs';
 import Planning from './pages/Planning';
+import Profit from './pages/Profit';
 
 const NAV_ITEMS = [
   { to: '/',               label: 'Dashboard' },
@@ -23,6 +24,7 @@ const NAV_ITEMS = [
   { to: '/inventory',      label: 'Inventory' },
   { to: '/maintenance',    label: 'Maintenance' },
   { to: '/costs',          label: 'Costs' },
+  { to: '/profit',         label: 'Profit' },
   { to: '/decommissioned', label: 'Decommissioned' },
   { to: '/settings',       label: 'Settings' },
 ];
@@ -116,6 +118,7 @@ export default function App() {
             <Route path="/inventory"       element={<Inventory />} />
             <Route path="/maintenance"     element={<Maintenance />} />
             <Route path="/costs"           element={<Costs />} />
+            <Route path="/profit"          element={<Profit />} />
             <Route path="/decommissioned"  element={<Decommissioned />} />
             <Route path="/settings"        element={<Settings />} />
           </Routes>

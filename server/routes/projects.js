@@ -8,6 +8,16 @@ const GCODE_DIR = path.join(__dirname, '..', 'gcode');
 // scheduler is optional — only needed at runtime for sweepIdlePrinters on reactivate.
 // Tests pass null so there is no live scheduler dependency.
 module.exports = (db, scheduler = null) => {
+  router.use((req, res, next) => {
+    if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'technology')) {
+      const value = req.body.technology;
+      if (value !== null && value !== '' && !['FDM', 'SLA'].includes(value)) {
+        return res.status(400).json({ error: 'technology must be FDM, SLA or null' });
+      }
+      req.body.technology = value || null;
+    }
+    next();
+  });
   router.get('/', (req, res) => {
     const projects = db.prepare('SELECT * FROM projects ORDER BY priority ASC, created_at ASC').all();
     res.json(projects);
@@ -20,13 +30,14 @@ module.exports = (db, scheduler = null) => {
   });
 
   router.post('/', (req, res) => {
-    const { name, description, sale_price } = req.body;
+    const { name, description, sale_price, customer_name } = req.body;
+    if (customer_name != null && typeof customer_name !== 'string') return res.status(400).json({ error: 'customer_name must be text' });
     if (!name) return res.status(400).json({ error: 'name is required' });
     const now = Date.now();
     const result = db.prepare(`
-      INSERT INTO projects (name, description, sale_price, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(name, description || null, Math.max(0, Number(sale_price) || 0), now, now);
+      INSERT INTO projects (name, description, sale_price, customer_name, technology, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(name, description || null, Math.max(0, Number(sale_price) || 0), customer_name?.trim() || null, req.body.technology || null, now, now);
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(result.lastInsertRowid);
     res.status(201).json(project);
   });
@@ -62,10 +73,17 @@ module.exports = (db, scheduler = null) => {
   router.put('/:id', (req, res) => {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    const { name, description, status, sale_price } = req.body;
+    const { name, description, status, sale_price, customer_name } = req.body;
+    if (customer_name != null && typeof customer_name !== 'string') return res.status(400).json({ error: 'customer_name must be text' });
     const price = sale_price === undefined ? null : Number(sale_price);
     if (sale_price !== undefined && (!Number.isFinite(price) || price < 0)) {
       return res.status(400).json({ error: 'sale_price must be a non-negative number' });
+    }
+    if (customer_name !== undefined) {
+      db.prepare('UPDATE projects SET customer_name=? WHERE id=?').run(customer_name?.trim() || null, project.id);
+    }
+    if (req.body.technology !== undefined) {
+      db.prepare('UPDATE projects SET technology=? WHERE id=?').run(req.body.technology, project.id);
     }
     db.prepare(`
       UPDATE projects
@@ -193,9 +211,9 @@ module.exports = (db, scheduler = null) => {
 
     db.transaction(() => {
       const projResult = db.prepare(`
-        INSERT INTO projects (name, description, status, priority, sale_price, created_at, updated_at)
-        VALUES (?, ?, 'draft', 0, ?, ?, ?)
-      `).run(name, source.description ?? null, Number(source.sale_price || 0), now, now);
+        INSERT INTO projects (name, description, status, priority, sale_price, customer_name, technology, created_at, updated_at)
+        VALUES (?, ?, 'draft', 0, ?, ?, ?, ?, ?)
+      `).run(name, source.description ?? null, Number(source.sale_price || 0), source.customer_name ?? null, source.technology ?? null, now, now);
       newProject = db.prepare('SELECT * FROM projects WHERE id = ?').get(projResult.lastInsertRowid);
 
       for (const part of sourceParts) {

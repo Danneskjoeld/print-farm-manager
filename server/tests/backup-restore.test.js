@@ -62,7 +62,9 @@ beforeEach(() => {
       required_material TEXT,
       required_color    TEXT,
       allowed_groups    TEXT,
-      sale_price        REAL NOT NULL DEFAULT 0
+      sale_price        REAL NOT NULL DEFAULT 0,
+      customer_name     TEXT
+      ,technology       TEXT
     );
     CREATE TABLE parts (
       id                  INTEGER PRIMARY KEY AUTOINCREMENT,

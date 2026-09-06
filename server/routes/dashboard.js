@@ -116,7 +116,7 @@ module.exports = (db) => {
     `).all();
 
     const financialProjects = db.prepare(`
-      SELECT pr.id, pr.name, pr.status, COALESCE(pr.sale_price,0) sale_price,
+      SELECT pr.id, pr.name, pr.customer_name, pr.technology, pr.created_at, pr.status, COALESCE(pr.sale_price,0) sale_price,
         CASE WHEN pr.status='completed' THEN COALESCE(pr.sale_price,0) ELSE 0 END revenue,
         COALESCE(SUM(CASE WHEN j.status IN ('finished','done','failed')
           THEN COALESCE(j.material_cost,0)+COALESCE(j.machine_cost,0)+
@@ -149,6 +149,13 @@ module.exports = (db) => {
       active_projects: projectsWithParts,
       recent_activity: recentActivity,
       financials: {
+        by_technology: ['FDM', 'SLA', null].map(technology => {
+          const projects = financialProjects.filter(p => (p.technology || null) === technology);
+          const revenue = projects.reduce((sum, p) => sum + p.revenue, 0);
+          const cost = projects.reduce((sum, p) => sum + p.production_cost, 0);
+          return { technology, projects: projects.length, completed_projects: projects.filter(p => p.status === 'completed').length,
+            revenue, production_cost: cost, profit: revenue - cost };
+        }),
         revenue,
         production_cost: productionCost,
         maintenance_cost: generalMaintenance,

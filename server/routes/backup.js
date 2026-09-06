@@ -135,8 +135,8 @@ module.exports = (db) => {
                @loaded_material, @loaded_color, @hourly_cost, @power_watts)
           `),
           project: db.prepare(`
-            INSERT INTO projects (id, name, description, status, priority, sale_price, created_at, updated_at, required_material, required_color)
-            VALUES (@id, @name, @description, @status, @priority, @sale_price, @created_at, @updated_at, @required_material, @required_color)
+            INSERT INTO projects (id, name, description, status, priority, sale_price, customer_name, technology, created_at, updated_at, required_material, required_color)
+            VALUES (@id, @name, @description, @status, @priority, @sale_price, @customer_name, @technology, @created_at, @updated_at, @required_material, @required_color)
           `),
           part: db.prepare(`
             INSERT INTO parts
@@ -163,7 +163,7 @@ module.exports = (db) => {
         };
 
         for (const p of (backup.printers || [])) stmts.printer.run({serial_number:'',loaded_material:null,loaded_color:null,hourly_cost:0,power_watts:0,...p});
-        for (const p of (backup.projects || [])) stmts.project.run({sale_price:0,required_material:null,required_color:null,...p});
+        for (const p of (backup.projects || [])) stmts.project.run({sale_price:0,customer_name:null,technology:null,required_material:null,required_color:null,...p});
         for (const p of (backup.parts    || [])) stmts.part.run(p);
         for (const g of (backup.gcodes   || [])) {
           // filepath stores just the filename — no path rewriting needed
