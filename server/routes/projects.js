@@ -8,6 +8,9 @@ const GCODE_DIR = path.join(__dirname, '..', 'gcode');
 // scheduler is optional — only needed at runtime for sweepIdlePrinters on reactivate.
 // Tests pass null so there is no live scheduler dependency.
 module.exports = (db, scheduler = null) => {
+  // Route tests and older embedded databases may not have gone through db.js yet.
+  // Keep the field available before this router reads or writes it.
+  try { db.exec('ALTER TABLE projects ADD COLUMN completed_at INTEGER'); } catch (_) {}
   router.use((req, res, next) => {
     if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'technology')) {
       const value = req.body.technology;
@@ -74,6 +77,20 @@ module.exports = (db, scheduler = null) => {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
     const { name, description, status, sale_price, customer_name } = req.body;
+    let completedAt;
+    if (req.body.completed_at !== undefined) {
+      if (project.status !== 'completed') {
+        return res.status(400).json({ error: 'A completion date can only be set for completed projects' });
+      }
+      if (req.body.completed_at === null || req.body.completed_at === '') {
+        completedAt = null;
+      } else {
+        completedAt = Number(req.body.completed_at);
+        if (!Number.isSafeInteger(completedAt) || completedAt < 0) {
+          return res.status(400).json({ error: 'completed_at must be a valid timestamp' });
+        }
+      }
+    }
     if (customer_name != null && typeof customer_name !== 'string') return res.status(400).json({ error: 'customer_name must be text' });
     const price = sale_price === undefined ? null : Number(sale_price);
     if (sale_price !== undefined && (!Number.isFinite(price) || price < 0)) {
@@ -91,9 +108,10 @@ module.exports = (db, scheduler = null) => {
           description = COALESCE(?, description),
           status = COALESCE(?, status),
           sale_price = COALESCE(?, sale_price),
+          completed_at = CASE WHEN ? THEN ? ELSE completed_at END,
           updated_at = ?
       WHERE id = ?
-    `).run(name, description, status, price, Date.now(), req.params.id);
+    `).run(name, description, status, price, req.body.completed_at !== undefined ? 1 : 0, completedAt, Date.now(), req.params.id);
     res.json(db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id));
   });
 

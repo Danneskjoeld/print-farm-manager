@@ -21,13 +21,16 @@ module.exports = (db) => {
          ORDER BY j.finished_at DESC LIMIT 1) AS last_parts_per_plate,
         (SELECT MAX(e.created_at) FROM printer_events e
          WHERE e.printer_id = p.id) AS last_event_at
+        , EXISTS(
+          SELECT 1 FROM jobs j WHERE j.printer_id=p.id AND j.status='manual_printing'
+        ) AS has_manual_job
       FROM printers p
       WHERE p.is_active = 1
       ORDER BY p.name
     `).all();
 
     // Derive fleet stats from the live printer list
-    const printing = printers.filter(p => p.status === 'PRINTING').length;
+    const printing = printers.filter(p => p.status === 'PRINTING' || p.has_manual_job === 1).length;
     const idle     = printers.filter(p => p.status === 'IDLE' && !p.is_held).length;
     const awaiting = printers.filter(
       p => p.is_held === 1 && (p.status === 'FINISHED' || p.status === 'IDLE')
@@ -57,7 +60,7 @@ module.exports = (db) => {
       SELECT COALESCE(SUM(? - j.started_at), 0) AS ms
       FROM jobs j
       JOIN parts p ON p.id = j.part_id
-      WHERE p.project_id = ? AND j.status = 'printing' AND j.started_at IS NOT NULL
+      WHERE p.project_id = ? AND j.status IN ('printing', 'manual_printing') AND j.started_at IS NOT NULL
     `);
 
     const materialUsedStmt = db.prepare(`
@@ -88,7 +91,7 @@ module.exports = (db) => {
         SELECT parts.*,
           COALESCE((
             SELECT SUM(j.parts_per_plate) FROM jobs j
-            WHERE j.part_id = parts.id AND j.status IN ('uploading', 'printing')
+            WHERE j.part_id = parts.id AND j.status IN ('uploading', 'printing', 'manual_printing')
           ), 0) AS active_qty
         FROM parts WHERE project_id = ? ORDER BY sort_order ASC, created_at ASC
       `).all(proj.id);
@@ -137,6 +140,21 @@ module.exports = (db) => {
     const generalMaintenance = Number(db.prepare(
       'SELECT COALESCE(SUM(cost),0) total FROM maintenance_records'
     ).get().total);
+    // completed_at is the accounting date. Older completed projects created
+    // before this field was introduced fall back to their last update date.
+    const hasCompletionDate = db.prepare('PRAGMA table_info(projects)').all()
+      .some(column => column.name === 'completed_at');
+    const completionDate = hasCompletionDate
+      ? 'COALESCE(pr.completed_at, pr.updated_at)'
+      : 'pr.updated_at';
+    const monthlyRevenue = db.prepare(`
+      SELECT strftime('%Y-%m', datetime(${completionDate} / 1000, 'unixepoch', 'localtime')) AS month,
+             COALESCE(SUM(pr.sale_price), 0) AS revenue
+      FROM projects pr
+      WHERE pr.status = 'completed'
+      GROUP BY month
+      ORDER BY month ASC
+    `).all();
 
     res.json({
       stats: {
@@ -162,6 +180,7 @@ module.exports = (db) => {
         total_cost: productionCost + generalMaintenance,
         profit: revenue - productionCost - generalMaintenance,
         projects: financialProjects,
+        monthly_revenue: monthlyRevenue,
       },
     });
   });

@@ -11,7 +11,7 @@ module.exports = (db, scheduler = null) => {
   const ACTIVE_QTY_SQL = `
     COALESCE((
       SELECT SUM(j.parts_per_plate) FROM jobs j
-      WHERE j.part_id = parts.id AND j.status IN ('uploading', 'printing')
+      WHERE j.part_id = parts.id AND j.status IN ('uploading', 'printing', 'manual_printing')
     ), 0) AS active_qty
   `;
 

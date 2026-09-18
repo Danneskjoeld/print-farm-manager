@@ -51,6 +51,7 @@ function EventBadge({ type }) {
 const STATUS_COLORS = {
   IDLE:     { bg: '#1e3a5f', text: '#93c5fd' },
   PRINTING: { bg: '#14532d', text: '#86efac' },
+  MANUAL_PRINTING: { bg: '#164e63', text: '#67e8f9' },
   FINISHED: { bg: '#14532d', text: '#86efac' },
   PAUSED:   { bg: '#78350f', text: '#fcd34d' },
   ERROR:    { bg: '#7f1d1d', text: '#fca5a5' },
@@ -112,7 +113,7 @@ export default function PrinterDetail() {
     if (printerRes.ok) {
       const printerData = await printerRes.json();
       setPrinter(printerData);
-      if (printerData.type === 'manual') {
+      if (printerData.type === 'manual' || printerData.type === 'bambu') {
         const manualRes = await fetch(`/api/printers/${id}/jobs/manual-options`);
         if (manualRes.ok) {
           const data = await manualRes.json();
@@ -272,7 +273,8 @@ export default function PrinterDetail() {
   if (loading) return <p style={{ color: '#64748b' }}>Loading…</p>;
   if (!printer) return <p style={{ color: '#fca5a5' }}>Printer not found.</p>;
 
-  const sc = STATUS_COLORS[printer.status] || STATUS_COLORS.UNKNOWN;
+  const displayStatus = printer.has_manual_job === 1 ? 'MANUAL_PRINTING' : printer.status;
+  const sc = STATUS_COLORS[displayStatus] || STATUS_COLORS.UNKNOWN;
 
   return (
     <div style={{ maxWidth: 720 }}>
@@ -356,7 +358,7 @@ export default function PrinterDetail() {
                   background: sc.bg, color: sc.text,
                   borderRadius: 4, padding: '2px 9px', fontSize: 12, fontWeight: 700,
                 }}>
-                  {printer.status}
+                  {displayStatus === 'MANUAL_PRINTING' ? 'MANUAL PRINT' : displayStatus}
                 </span>
               ) : (
                 <span style={{
@@ -530,11 +532,13 @@ export default function PrinterDetail() {
         )}
       </div>
 
-      {printer.type === 'manual' && (
+      {(printer.type === 'manual' || printer.type === 'bambu') && (
         <div style={{ background: '#131720', border: '1px solid #334155', borderRadius: 8, padding: '16px 20px', marginBottom: 24 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0', marginBottom: 6 }}>Manual print control</div>
           <div style={{ fontSize: 12, color: '#64748b', marginBottom: 14 }}>
-            This printer has no server connection. Start and finish its jobs here.
+            {printer.type === 'bambu'
+              ? 'Record a print started directly on this Bambu printer. No command is sent to the printer.'
+              : 'This printer has no server connection. Start and finish its jobs here.'}
           </div>
           {manualData.active_job ? (
             <div>

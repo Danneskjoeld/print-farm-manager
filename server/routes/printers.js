@@ -57,7 +57,19 @@ module.exports = (db) => {
         ) AS uploading_job_name,
         EXISTS(
           SELECT 1 FROM jobs j WHERE j.printer_id = p.id AND j.status = 'printing'
-        ) AS has_printing_job
+        ) AS has_printing_job,
+        EXISTS(
+          SELECT 1 FROM jobs j WHERE j.printer_id = p.id AND j.status = 'manual_printing'
+        ) AS has_manual_job,
+        (SELECT pr.name || ' · ' || pa.name
+          FROM jobs j JOIN parts pa ON pa.id=j.part_id JOIN projects pr ON pr.id=pa.project_id
+          WHERE j.printer_id=p.id AND j.status='manual_printing'
+          ORDER BY j.started_at DESC LIMIT 1
+        ) AS manual_job_name,
+        (SELECT j.started_at FROM jobs j
+          WHERE j.printer_id=p.id AND j.status='manual_printing'
+          ORDER BY j.started_at DESC LIMIT 1
+        ) AS manual_job_started_at
       FROM printers p
       WHERE p.is_active = 1
       ORDER BY p.name
@@ -114,7 +126,19 @@ module.exports = (db) => {
 
   // GET /api/printers/:id
   router.get('/:id', (req, res) => {
-    const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
+    const printer = db.prepare(`
+      SELECT p.*,
+        EXISTS(SELECT 1 FROM jobs j WHERE j.printer_id=p.id AND j.status='manual_printing') AS has_manual_job,
+        (SELECT pr.name || ' · ' || pa.name
+          FROM jobs j JOIN parts pa ON pa.id=j.part_id JOIN projects pr ON pr.id=pa.project_id
+          WHERE j.printer_id=p.id AND j.status='manual_printing'
+          ORDER BY j.started_at DESC LIMIT 1
+        ) AS manual_job_name,
+        (SELECT j.started_at FROM jobs j WHERE j.printer_id=p.id AND j.status='manual_printing'
+          ORDER BY j.started_at DESC LIMIT 1
+        ) AS manual_job_started_at
+      FROM printers p WHERE p.id = ?
+    `).get(req.params.id);
     if (!printer) return res.status(404).json({ error: 'Printer not found' });
     res.json(printer);
   });

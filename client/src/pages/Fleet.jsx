@@ -7,6 +7,7 @@ import { useToast } from '../useToast';
 
 const STATUS_COLORS = {
   PRINTING:   { bg: '#1e3a5f', text: '#60a5fa', label: 'Printing' },
+  MANUAL_PRINTING: { bg: '#164e63', text: '#67e8f9', label: 'Manual print' },
   UPLOADING:  { bg: '#3b2c69', text: '#a78bfa', label: 'Uploading' },
   IDLE:       { bg: '#1f2937', text: '#6b7280', label: 'Idle' },
   READY:      { bg: '#1f2937', text: '#94a3b8', label: 'Ready' },
@@ -31,6 +32,7 @@ function statusStyle(status) {
 // existing confirmation flow renders unchanged. This is display-only; it never
 // feeds back into printers.status.
 function displayStatus(p) {
+  if (p.has_manual_job === 1) return 'MANUAL_PRINTING';
   if (p.has_uploading_job === 1 && p.is_held === 0 && p.status !== 'PRINTING') return 'UPLOADING';
   return p.status;
 }
@@ -59,6 +61,7 @@ function PrinterCard({ printer, selected, onToggleSelect, onSetReady, onBadPrint
   const shownStatus = displayStatus(printer);
   const style = statusStyle(shownStatus);
   const isUploading = shownStatus === 'UPLOADING';
+  const isManualPrinting = shownStatus === 'MANUAL_PRINTING';
 
   // Confirmed-qty input — pre-filled from the last finished job's parts_per_plate.
   // Only shown when is_held and we know how many parts were on the plate.
@@ -100,7 +103,7 @@ function PrinterCard({ printer, selected, onToggleSelect, onSetReady, onBadPrint
   // Upload stalled: all retries exhausted but printer is not confirmed printing or idle.
   // Operator must check the machine and confirm whether the print is running or not.
   const needsUploadConfirmation = printer.is_held === 1 && printer.has_uploading_job === 1 && printer.status !== 'OFFLINE';
-  const isPrinting = printer.status === 'PRINTING';
+  const isPrinting = shownStatus === 'PRINTING' || isManualPrinting;
   const pct = isPrinting && printer.job_progress != null ? Math.round(printer.job_progress) : null;
   const timeLeft = isPrinting ? formatTimeRemaining(printer.job_time_remaining) : null;
   const eta      = isPrinting ? formatEta(printer.job_time_remaining) : null;
@@ -171,6 +174,12 @@ function PrinterCard({ printer, selected, onToggleSelect, onSetReady, onBadPrint
       {/* Print job info — only when printing */}
       {isPrinting && (
         <div style={{ marginTop: 2 }}>
+          {isManualPrinting ? (
+            <div style={{ fontSize: 11, color: '#67e8f9' }}>
+              {printer.manual_job_name || 'Manual print being tracked'}
+              <span style={{ color: '#94a3b8' }}> · manually recorded</span>
+            </div>
+          ) : <>
           {printer.job_name && (
             <div style={{
               fontSize: 11, color: '#94a3b8', fontFamily: 'monospace',
@@ -198,6 +207,7 @@ function PrinterCard({ printer, selected, onToggleSelect, onSetReady, onBadPrint
               </span>
             )}
           </div>
+          </>}
         </div>
       )}
 

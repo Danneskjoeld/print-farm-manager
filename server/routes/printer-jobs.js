@@ -7,15 +7,22 @@ module.exports = (db) => {
   const logEvent = (printerId, eventType, note) => db.prepare(
     'INSERT INTO printer_events (printer_id,event_type,note,created_at) VALUES (?,?,?,?)'
   ).run(printerId, eventType, note || null, Date.now());
-  const manualPrinter = (id) => db.prepare(
-    "SELECT * FROM printers WHERE id=? AND is_active=1 AND type='manual'"
+  // Bambu printers can also record a print started outside this application.
+  // These jobs deliberately use a separate status so the network scheduler and
+  // printer poller never mistake them for a job they dispatched themselves.
+  const manualCapablePrinter = (id) => db.prepare(
+    "SELECT * FROM printers WHERE id=? AND is_active=1 AND type IN ('manual','bambu')"
   ).get(id);
 
   const activeManualJob = (printerId) => db.prepare(`
     SELECT j.*, p.name part_name, pr.name project_name
     FROM jobs j JOIN parts p ON p.id=j.part_id JOIN projects pr ON pr.id=p.project_id
-    WHERE j.printer_id=? AND j.status='printing' ORDER BY j.started_at DESC LIMIT 1
+    WHERE j.printer_id=? AND j.status IN ('printing','manual_printing') ORDER BY j.started_at DESC LIMIT 1
   `).get(printerId);
+
+  const activeAutomaticJob = (printerId) => db.prepare(
+    "SELECT id FROM jobs WHERE printer_id=? AND status IN ('queued','uploading','printing') LIMIT 1"
+  ).get(printerId);
 
   const setManualCosts = (job, printer, finishedAt, materialCost) => {
     const hours = Math.max(0, (finishedAt - job.started_at) / 3600000);
@@ -29,9 +36,10 @@ module.exports = (db) => {
       .run(materialCost, machineCost, energyCost, job.id);
   };
 
-  // Manual printers never receive scheduler jobs. Operators select an open part here.
+  // Manual printers never receive scheduler jobs. On Bambu devices this records a
+  // print that the operator started directly at the printer; it sends no command.
   router.get('/manual-options', (req, res) => {
-    if (!manualPrinter(req.params.id)) return res.status(404).json({ error: 'Manual printer not found' });
+    if (!manualCapablePrinter(req.params.id)) return res.status(404).json({ error: 'Manual print control is not available for this printer' });
     const parts = db.prepare(`
       SELECT p.id, p.name, p.target_qty, p.completed_qty, pr.id project_id, pr.name project_name
       FROM parts p JOIN projects pr ON pr.id=p.project_id
@@ -42,9 +50,12 @@ module.exports = (db) => {
   });
 
   router.post('/manual-start', (req, res) => {
-    const printer = manualPrinter(req.params.id);
-    if (!printer) return res.status(404).json({ error: 'Manual printer not found' });
+    const printer = manualCapablePrinter(req.params.id);
+    if (!printer) return res.status(404).json({ error: 'Manual print control is not available for this printer' });
     if (activeManualJob(printer.id)) return res.status(409).json({ error: 'This printer already has an active manual job' });
+    if (printer.type === 'bambu' && activeAutomaticJob(printer.id)) {
+      return res.status(409).json({ error: 'This Bambu printer already has an application-managed active job' });
+    }
     const partId = Number(req.body?.part_id);
     const qty = Number(req.body?.parts_per_plate);
     const durationMinutes = Number(req.body?.estimated_duration_minutes);
@@ -61,17 +72,23 @@ module.exports = (db) => {
     const now = Date.now();
     const result = db.prepare(`
       INSERT INTO jobs (part_id,printer_id,gcode_id,parts_per_plate,status,started_at,created_at,material_cost)
-      VALUES (?,?,NULL,?,'printing',?,?,?)
-    `).run(part.id, printer.id, qty, now, now, Math.max(0, Number(req.body?.material_cost) || 0));
-    db.prepare("UPDATE printers SET status='PRINTING', job_name=?, job_progress=0, job_time_remaining=? WHERE id=?")
-      .run(`${part.name} (manual)`, Math.round(durationMinutes * 60), printer.id);
+      VALUES (?,?,NULL,?,?,?,?,?)
+    `).run(part.id, printer.id, qty, printer.type === 'bambu' ? 'manual_printing' : 'printing', now, now, Math.max(0, Number(req.body?.material_cost) || 0));
+    if (printer.type === 'bambu') {
+      // Keep the real Bambu status untouched. Holding it prevents the scheduler
+      // from dispatching another job while the operator-managed print is tracked.
+      db.prepare('UPDATE printers SET is_held=1 WHERE id=?').run(printer.id);
+    } else {
+      db.prepare("UPDATE printers SET status='PRINTING', job_name=?, job_progress=0, job_time_remaining=? WHERE id=?")
+        .run(`${part.name} (manual)`, Math.round(durationMinutes * 60), printer.id);
+    }
     logEvent(printer.id, 'job_started', `Manual job ${result.lastInsertRowid} — ${part.name} (${qty} parts, planned ${durationMinutes} min)`);
     res.status(201).json(activeManualJob(printer.id));
   });
 
   router.post('/manual-complete', (req, res) => {
-    const printer = manualPrinter(req.params.id);
-    if (!printer) return res.status(404).json({ error: 'Manual printer not found' });
+    const printer = manualCapablePrinter(req.params.id);
+    if (!printer) return res.status(404).json({ error: 'Manual print control is not available for this printer' });
     const job = activeManualJob(printer.id);
     if (!job) return res.status(409).json({ error: 'No active manual job' });
     const qty = req.body?.confirmed_qty == null ? job.parts_per_plate : Number(req.body.confirmed_qty);
@@ -95,7 +112,13 @@ module.exports = (db) => {
         const open = db.prepare("SELECT COUNT(*) count FROM parts WHERE project_id=? AND status='open'").get(part.project_id).count;
         if (open === 0) db.prepare("UPDATE projects SET status='completed', updated_at=? WHERE id=?").run(Date.now(), part.project_id);
       }
-      db.prepare("UPDATE printers SET status='IDLE', job_name=NULL, job_progress=NULL, job_time_remaining=NULL WHERE id=?").run(printer.id);
+      if (printer.type === 'bambu') {
+        // The live Bambu state remains authoritative. Keep it held until the
+        // operator explicitly releases it through the normal Fleet workflow.
+        db.prepare('UPDATE printers SET is_held=1 WHERE id=?').run(printer.id);
+      } else {
+        db.prepare("UPDATE printers SET status='IDLE', job_name=NULL, job_progress=NULL, job_time_remaining=NULL WHERE id=?").run(printer.id);
+      }
     });
     tx();
     logEvent(printer.id, 'job_finished', `Manual job ${job.id} — ${job.part_name} (${qty} good parts)`);
@@ -103,8 +126,8 @@ module.exports = (db) => {
   });
 
   router.post('/manual-fail', (req, res) => {
-    const printer = manualPrinter(req.params.id);
-    if (!printer) return res.status(404).json({ error: 'Manual printer not found' });
+    const printer = manualCapablePrinter(req.params.id);
+    if (!printer) return res.status(404).json({ error: 'Manual print control is not available for this printer' });
     const job = activeManualJob(printer.id);
     if (!job) return res.status(409).json({ error: 'No active manual job' });
     const actualMinutes = req.body?.actual_duration_minutes == null ? null : Number(req.body.actual_duration_minutes);
@@ -116,7 +139,11 @@ module.exports = (db) => {
     db.transaction(() => {
       db.prepare("UPDATE jobs SET status='failed', finished_at=? WHERE id=?").run(finishedAt, job.id);
       setManualCosts(job, printer, finishedAt, materialCost);
-      db.prepare("UPDATE printers SET status='IDLE', job_name=NULL, job_progress=NULL, job_time_remaining=NULL WHERE id=?").run(printer.id);
+      if (printer.type === 'bambu') {
+        db.prepare('UPDATE printers SET is_held=1 WHERE id=?').run(printer.id);
+      } else {
+        db.prepare("UPDATE printers SET status='IDLE', job_name=NULL, job_progress=NULL, job_time_remaining=NULL WHERE id=?").run(printer.id);
+      }
     })();
     logEvent(printer.id, 'job_failed', `Manual job ${job.id} — ${job.part_name}${req.body?.note ? ` — ${req.body.note}` : ''}`);
     res.json(db.prepare('SELECT * FROM jobs WHERE id=?').get(job.id));

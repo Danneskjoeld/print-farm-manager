@@ -2,7 +2,11 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
-const dataDir = path.join(__dirname, 'data');
+// FARM_DATA_DIR makes it possible to run an isolated local test instance
+// without sharing the production database.
+const dataDir = process.env.FARM_DATA_DIR
+  ? path.resolve(process.env.FARM_DATA_DIR)
+  : path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
@@ -110,6 +114,29 @@ try { db.exec('ALTER TABLE projects ADD COLUMN required_color TEXT'); } catch (_
 try { db.exec('ALTER TABLE projects ADD COLUMN sale_price REAL NOT NULL DEFAULT 0'); } catch (_) {}
 try { db.exec('ALTER TABLE projects ADD COLUMN customer_name TEXT'); } catch (_) {}
 try { db.exec("ALTER TABLE projects ADD COLUMN technology TEXT CHECK (technology IN ('FDM','SLA'))"); } catch (_) {}
+try { db.exec('ALTER TABLE projects ADD COLUMN completed_at INTEGER'); } catch (_) {}
+// Keep the completion date accurate regardless of whether a project is closed
+// from the Projects page, by the scheduler, or through a printer recovery flow.
+// Existing manually entered dates are never overwritten by a later status update.
+try {
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS set_project_completed_at
+    AFTER UPDATE OF status ON projects
+    WHEN NEW.status = 'completed' AND OLD.status != 'completed' AND NEW.completed_at IS NULL
+    BEGIN
+      UPDATE projects
+      SET completed_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000
+      WHERE id = NEW.id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS clear_project_completed_at
+    AFTER UPDATE OF status ON projects
+    WHEN OLD.status = 'completed' AND NEW.status != 'completed'
+    BEGIN
+      UPDATE projects SET completed_at = NULL WHERE id = NEW.id;
+    END;
+  `);
+} catch (_) {}
 try { db.exec('ALTER TABLE printers ADD COLUMN hourly_cost REAL DEFAULT 0'); } catch (_) {}
 try { db.exec('ALTER TABLE printers ADD COLUMN power_watts REAL DEFAULT 0'); } catch (_) {}
 try { db.exec('ALTER TABLE jobs ADD COLUMN material_cost REAL DEFAULT 0'); } catch (_) {}

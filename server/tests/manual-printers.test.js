@@ -36,9 +36,11 @@ beforeEach(() => {
     INSERT INTO settings VALUES ('electricity_price_kwh','0.30');
     INSERT INTO printers VALUES (1,'Form 4','manual','form-4',1,'IDLE',6,200,NULL,NULL,NULL);
     INSERT INTO printers VALUES (2,'Network printer','prusa','mk4s',1,'IDLE',6,200,NULL,NULL,NULL);
+    INSERT INTO printers VALUES (3,'Bambu X1C','bambu','x1c',1,'IDLE',6,200,NULL,NULL,NULL);
     INSERT INTO projects VALUES (1,'Dental models','active',0,1,1);
     INSERT INTO parts VALUES (1,1,'Upper jaw',2,0,'open',0,1);
   `);
+  db.exec('ALTER TABLE printers ADD COLUMN is_held INTEGER DEFAULT 1');
   app = express();
   app.use(express.json());
   app.use('/api/printers/:id/jobs', require('../routes/printer-jobs')(db));
@@ -55,6 +57,16 @@ test('manual job can be started only on a manual printer', async () => {
   expect(res.body.status).toBe('printing');
   expect(db.prepare('SELECT status FROM printers WHERE id=1').get().status).toBe('PRINTING');
   expect((await request(app).post('/api/printers/1/jobs/manual-start').send(payload)).status).toBe(409);
+});
+
+test('a Bambu print can be recorded manually without changing its live status', async () => {
+  const res = await request(app).post('/api/printers/3/jobs/manual-start').send({
+    part_id: 1, parts_per_plate: 1, estimated_duration_minutes: 45, material_cost: 2,
+  });
+  if (res.status !== 201) throw new Error(res.body.error);
+  expect(res.status).toBe(201);
+  expect(res.body.status).toBe('manual_printing');
+  expect(db.prepare('SELECT status,is_held FROM printers WHERE id=3').get()).toEqual({ status: 'IDLE', is_held: 1 });
 });
 
 test('successful completion books quantity, duration and production costs', async () => {

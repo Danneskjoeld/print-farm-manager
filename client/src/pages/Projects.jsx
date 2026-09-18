@@ -1243,6 +1243,20 @@ export default function Projects() {
     } catch (err) { showToast(err.message, 'error'); }
   }
 
+  async function saveCompletionDate(value) {
+    const completedAt = value ? new Date(`${value}T12:00:00`).getTime() : null;
+    if (value && Number.isNaN(completedAt)) return showToast('Invalid completion date', 'error');
+    try {
+      const res = await fetch(`/api/projects/${detailProject.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed_at: completedAt }),
+      });
+      if (!res.ok) throw new Error('Completion date could not be saved');
+      await Promise.all([fetchDetail(detailProject.id), fetchProjects()]);
+      showToast('Completion date saved');
+    } catch (err) { showToast(err.message, 'error'); }
+  }
+
 
   // ─── List view ───────────────────────────────────────────────────────────────
   if (selectedId == null) {
@@ -1535,6 +1549,15 @@ export default function Projects() {
             style={{...inputSx,width:110}} />
           €
         </label>
+        {detailProject.status === 'completed' && <label style={{display:'flex',alignItems:'center',gap:6,color:'#64748b',fontSize:12}}>
+          Completed on
+          <input type="date"
+            key={detailProject.completed_at || 'unset'}
+            defaultValue={detailProject.completed_at ? new Date(detailProject.completed_at).toLocaleDateString('en-CA') : ''}
+            onBlur={e => saveCompletionDate(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+            style={{...inputSx,width:145}} />
+        </label>}
       </div>
 
       {/* Project-level filament defaults */}

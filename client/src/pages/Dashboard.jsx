@@ -8,6 +8,7 @@ const POLL_INTERVAL_MS = 15000;
 
 const CELL_COLORS = {
   PRINTING:  { bg: '#1e3a5f', text: '#60a5fa', border: '#1e40af' },
+  MANUAL_PRINTING: { bg: '#164e63', text: '#67e8f9', border: '#155e75' },
   IDLE:      { bg: '#1a2030', text: '#374151', border: '#232b3a' },
   FINISHED:  { bg: '#14532d', text: '#22c55e', border: '#15803d' },
   STOPPED:   { bg: '#431407', text: '#fb923c', border: '#7c2d12' },
@@ -36,6 +37,7 @@ const LEGEND_ITEMS = [
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function cellColors(printer) {
+  if (printer.has_manual_job === 1) return CELL_COLORS.MANUAL_PRINTING;
   // Held printer (awaiting operator sign-off) renders as green regardless of status
   if (printer.is_held === 1 && (printer.status === 'FINISHED' || printer.status === 'IDLE')) {
     return CELL_COLORS.FINISHED;
@@ -333,7 +335,7 @@ export default function Dashboard() {
                     return (
                       <div
                         key={printer.id}
-                        title={`${printer.name} — ${printer.status}`}
+                        title={`${printer.name} — ${printer.has_manual_job === 1 ? 'Manual print' : printer.status}`}
                         style={{
                           width: 54, height: 44, borderRadius: 6,
                           background: c.bg, border: `1px solid ${c.border}`,

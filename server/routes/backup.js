@@ -25,6 +25,8 @@ function runUpload(req, res) {
 }
 
 module.exports = (db) => {
+  const hasCompletionDate = () => db.prepare('PRAGMA table_info(projects)').all()
+    .some(column => column.name === 'completed_at');
   // GET /api/backup — export full farm as a downloadable JSON bundle
   router.get('/', (req, res) => {
     const printers        = db.prepare('SELECT * FROM printers').all();
@@ -134,10 +136,15 @@ module.exports = (db) => {
                @job_name, @job_progress, @job_time_remaining, @serial_number,
                @loaded_material, @loaded_color, @hourly_cost, @power_watts)
           `),
-          project: db.prepare(`
-            INSERT INTO projects (id, name, description, status, priority, sale_price, customer_name, technology, created_at, updated_at, required_material, required_color)
-            VALUES (@id, @name, @description, @status, @priority, @sale_price, @customer_name, @technology, @created_at, @updated_at, @required_material, @required_color)
-          `),
+          project: hasCompletionDate()
+            ? db.prepare(`
+              INSERT INTO projects (id, name, description, status, priority, sale_price, customer_name, technology, completed_at, created_at, updated_at, required_material, required_color)
+              VALUES (@id, @name, @description, @status, @priority, @sale_price, @customer_name, @technology, @completed_at, @created_at, @updated_at, @required_material, @required_color)
+            `)
+            : db.prepare(`
+              INSERT INTO projects (id, name, description, status, priority, sale_price, customer_name, technology, created_at, updated_at, required_material, required_color)
+              VALUES (@id, @name, @description, @status, @priority, @sale_price, @customer_name, @technology, @created_at, @updated_at, @required_material, @required_color)
+            `),
           part: db.prepare(`
             INSERT INTO parts
               (id, project_id, name, target_qty, completed_qty, status, created_at, updated_at, sort_order)
@@ -163,7 +170,7 @@ module.exports = (db) => {
         };
 
         for (const p of (backup.printers || [])) stmts.printer.run({serial_number:'',loaded_material:null,loaded_color:null,hourly_cost:0,power_watts:0,...p});
-        for (const p of (backup.projects || [])) stmts.project.run({sale_price:0,customer_name:null,technology:null,required_material:null,required_color:null,...p});
+        for (const p of (backup.projects || [])) stmts.project.run({sale_price:0,customer_name:null,technology:null,completed_at:null,required_material:null,required_color:null,...p});
         for (const p of (backup.parts    || [])) stmts.part.run(p);
         for (const g of (backup.gcodes   || [])) {
           // filepath stores just the filename — no path rewriting needed

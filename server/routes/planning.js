@@ -53,7 +53,7 @@ module.exports = (db) => {
       JOIN parts pa ON pa.id=j.part_id
       JOIN projects pr ON pr.id=pa.project_id
       LEFT JOIN gcodes g ON g.id=j.gcode_id
-      WHERE j.status IN ('uploading','printing')
+      WHERE j.status IN ('uploading','printing','manual_printing')
     `).all();
     for (const job of activeJobs) {
       const lane = lanes.get(job.printer_id);
@@ -77,7 +77,7 @@ module.exports = (db) => {
     `).all();
     const partStmt = db.prepare(`
       SELECT pa.*, COALESCE((SELECT SUM(j.parts_per_plate) FROM jobs j
-        WHERE j.part_id=pa.id AND j.status IN ('uploading','printing')),0) active_qty
+        WHERE j.part_id=pa.id AND j.status IN ('uploading','printing','manual_printing')),0) active_qty
       FROM parts pa
       WHERE pa.project_id=? AND pa.status='open' AND pa.completed_qty < pa.target_qty
       ORDER BY pa.sort_order, pa.created_at, pa.id
